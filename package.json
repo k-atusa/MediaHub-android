@@ -1,0 +1,29 @@
+{
+  "name": "mc-ping-check",
+  "version": "1.0.0",
+  "description": "A web service to check if a Minecraft server is online using TCP ping",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc && node dist/index.js"
+  },
+  "keywords": [
+    "minecraft",
+    "server",
+    "ping",
+    "status",
+    "check"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^5.1.0",
+    "minecraft-server-util": "^5.4.4"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.5",
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  }
+}
