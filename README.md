@@ -56,12 +56,6 @@ curl "http://localhost:3000/?url=play.example.com:25565"
 curl "http://localhost:3000/?url=play.example.com"
 ```
 
-#### Health Check
-
-```
-GET /health
-```
-
 **Response:** `ok`
 
 ## Integration with Betterstack
