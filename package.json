@@ -8,11 +8,18 @@
     "start": "node dist/index.js",
     "dev": "tsc && node dist/index.js"
   },
-  "keywords": ["minecraft", "server", "ping", "status", "check"],
+  "keywords": [
+    "minecraft",
+    "server",
+    "ping",
+    "status",
+    "check"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "minecraft-server-util": "^5.4.4"
   },
   "devDependencies": {
     "@types/express": "^5.0.5",

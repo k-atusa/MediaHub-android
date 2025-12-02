@@ -1,39 +1,23 @@
 import express, { Request, Response } from 'express';
-import net from 'net';
+import { status } from 'minecraft-server-util';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const TIMEOUT_MS = 5000; // 5 seconds timeout for TCP connection
+const TIMEOUT_MS = 5000; // 5 seconds timeout for Minecraft server ping
 
 /**
- * Performs a TCP ping to check if a server is reachable
+ * Checks if a Minecraft server is online using the Server List Ping protocol
  * @param host - The hostname or IP address
  * @param port - The port number
  * @returns Promise<boolean> - true if server is online, false otherwise
  */
-function tcpPing(host: string, port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = new net.Socket();
-    
-    socket.setTimeout(TIMEOUT_MS);
-    
-    socket.on('connect', () => {
-      socket.destroy();
-      resolve(true);
-    });
-    
-    socket.on('timeout', () => {
-      socket.destroy();
-      resolve(false);
-    });
-    
-    socket.on('error', () => {
-      socket.destroy();
-      resolve(false);
-    });
-    
-    socket.connect(port, host);
-  });
+async function checkMinecraftServer(host: string, port: number): Promise<boolean> {
+  try {
+    await status(host, port, { timeout: TIMEOUT_MS });
+    return true;
+  } catch (error) {
+    return false;
+  }
 }
 
 /**
@@ -92,14 +76,9 @@ app.get('/', async (req: Request, res: Response) => {
     return;
   }
   
-  const isOnline = await tcpPing(serverAddress.host, serverAddress.port);
+  const isOnline = await checkMinecraftServer(serverAddress.host, serverAddress.port);
   
   res.send(isOnline ? 'online' : 'offline');
-});
-
-// Health check endpoint
-app.get('/health', (_req: Request, res: Response) => {
-  res.send('ok');
 });
 
 app.listen(PORT, () => {
