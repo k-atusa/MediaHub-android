@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="MediaHub JE"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:largeHeap="true"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/Theme.k7mediahub">
+
+        <activity android:name=".view.LoginView"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+
+        <activity android:name=".view.FolderView" android:exported="false" />
+        <activity android:name=".view.FileView" android:exported="false" />
+        <activity android:name=".view.MediaView" android:exported="false" />
+
+        <service
+            android:name=".app.SvcMH"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="true"
+            android:exported="false" />
+    </application>
+</manifest>
+
+<!--
+WHY MediaHub Java Edition
+resource:
+    res - new - image asset - add foreground, background image
+    drawable - new - vector asset - search, add
+build:
+    file - project structure - dependency - add org.bouncycastle:bcprov-jdk18on com.lambdapioneer.argon2kt:argon2kt
+    build.gradle.kts - set version info
+-->

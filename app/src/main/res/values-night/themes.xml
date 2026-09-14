@@ -1,0 +1,18 @@
+<resources> <!-- USAG-THEME1 R1 -->
+    <style name="Theme.k7mediahub" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- button background and its text -->
+        <item name="colorPrimary">@color/blue_200</item>
+        <item name="colorOnPrimary">@color/black</item>
+        <!-- secondary background and its text -->
+        <item name="colorSecondary">@color/cyan_100</item>
+        <item name="colorOnSecondary">@color/black</item>
+        <!-- also button but danger color -->
+        <item name="colorError">@color/red_100</item>
+        <item name="colorOnError">@color/black</item>
+        <!-- background and text -->
+        <item name="colorSurface">@color/gray_800</item>
+        <item name="colorSurfaceVariant">@color/gray_600</item>
+        <item name="colorOnSurface">@color/white</item>
+        <item name="colorOnSurfaceVariant">@color/gray_200</item>
+    </style>
+</resources>

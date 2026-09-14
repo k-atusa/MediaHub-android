@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    style="@style/vbox"
+    android:layout_height="match_parent"
+    android:background="?attr/colorSurface"
+    android:paddingTop="48dp"
+    android:paddingBottom="64dp">
+
+    <!-- Top Bar -->
+    <LinearLayout style="@style/hbox" android:paddingVertical="4dp" android:paddingHorizontal="8dp">
+        <TextView style="@style/title" android:text="Folders" />
+        <View style="@style/spacer" />
+        <Button
+            android:id="@+id/btnAddFolder"
+            style="@style/btnPri"
+            android:text="New Folder" />
+    </LinearLayout>
+
+    <!-- Folder List -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/rvFolders"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:clipToPadding="false"
+        android:padding="8dp" />
+
+    <!-- Status Bar -->
+    <TextView
+        android:id="@+id/txtStatus"
+        style="@style/cap"
+        android:paddingVertical="4dp"
+        android:paddingHorizontal="8dp"/>
+
+</LinearLayout>

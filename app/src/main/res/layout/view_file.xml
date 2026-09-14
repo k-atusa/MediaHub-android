@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    style="@style/vbox"
+    android:layout_height="match_parent"
+    android:background="?attr/colorSurface"
+    android:paddingTop="48dp"
+    android:paddingBottom="64dp">
+
+    <!-- Top Bar -->
+    <LinearLayout style="@style/hbox" android:paddingVertical="4dp" android:paddingHorizontal="8dp">
+        <TextView
+            android:id="@+id/txtFolderName"
+            style="@style/title"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:singleLine="true" />
+        <Button
+            android:id="@+id/btnAddFiles"
+            style="@style/btnSec"
+            android:text="Add Files"
+            android:layout_marginStart="8dp" />
+    </LinearLayout>
+
+    <!-- File List -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/rvFiles"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:clipToPadding="false"
+        android:padding="4dp" />
+
+    <!-- Pagination Bar -->
+    <LinearLayout
+        android:id="@+id/layoutPagination"
+        style="@style/hbox"
+        android:gravity="center"
+        android:paddingVertical="4dp"
+        android:paddingHorizontal="8dp"
+        android:visibility="gone">
+        <Button
+            android:id="@+id/btnPrev"
+            style="@style/btnOut"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Prev" />
+        <TextView
+            android:id="@+id/txtPageInfo"
+            style="@style/body"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="16dp"
+            android:text="1 / 1" />
+        <Button
+            android:id="@+id/btnNext"
+            style="@style/btnOut"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Next" />
+    </LinearLayout>
+
+    <!-- Bottom Bar -->
+    <LinearLayout style="@style/hbox" android:paddingVertical="4dp" android:paddingHorizontal="8dp">
+        <TextView
+            android:id="@+id/txtStatus"
+            style="@style/cap"
+            android:layout_width="0dp"
+            android:layout_weight="1" />
+        <Button
+            android:id="@+id/btnDownload"
+            style="@style/btnPri"
+            android:text="Download"
+            android:layout_marginStart="8dp" />
+    </LinearLayout>
+
+</LinearLayout>

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    style="@style/card"
+    android:layout_marginHorizontal="2dp"
+    android:layout_marginVertical="2dp"
+    android:clickable="true"
+    android:focusable="true">
+
+    <LinearLayout
+        android:orientation="vertical"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <ImageView
+            android:id="@+id/imgThumb"
+            android:layout_width="match_parent"
+            android:layout_height="140dp"
+            android:scaleType="centerCrop"
+            android:background="?attr/colorSurface" />
+
+        <LinearLayout
+            android:orientation="horizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:padding="4dp">
+            
+            <CheckBox
+                android:id="@+id/chkSelect"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:scaleX="0.8"
+                android:scaleY="0.8"
+                android:minWidth="0dp"
+                android:minHeight="0dp" />
+                
+            <TextView
+                android:id="@+id/txtFileName"
+                style="@style/body"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_marginStart="2dp"
+                android:textSize="12sp"
+                android:ellipsize="middle"
+                android:singleLine="true" />
+        </LinearLayout>
+    </LinearLayout>
+
+</com.google.android.material.card.MaterialCardView>

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PDF Viewer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #333;
+        }
+
+        #viewer-container {
+            width: 100%;
+            overflow: auto;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding-bottom: 70px;
+        }
+
+        #page-wrapper {
+            transform-origin: top center;
+            transition: transform 0.15s ease-out;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        canvas {
+            display: block;
+            margin: 10px 0;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+        }
+
+        #loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-family: sans-serif;
+            z-index: 10;
+        }
+
+        #zoom-controls {
+            position: fixed;
+            bottom: 32px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: none;
+            flex-direction: row;
+            align-items: center;
+            gap: 8px;
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 18px;
+            padding: 4px 12px;
+            z-index: 100;
+        }
+
+        #zoom-controls button {
+            width: 32px;
+            height: 32px;
+            border: none;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #zoom-controls button:active {
+            background: rgba(255, 255, 255, 0.4);
+        }
+
+        #zoom-label {
+            color: white;
+            font-family: sans-serif;
+            font-size: 12px;
+            min-width: 40px;
+            text-align: center;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="loading">Loading PDF...</div>
+    <div id="viewer-container">
+        <div id="page-wrapper"></div>
+    </div>
+    <div id="zoom-controls">
+        <button id="btn-zoom-out">−</button>
+        <span id="zoom-label">100%</span>
+        <button id="btn-zoom-in">+</button>
+    </div>
+
+    <script>
+        const url = new URLSearchParams(window.location.search).get('file');
+        if (url) {
+            const pdfjsLib = window['pdfjs-dist/build/pdf'];
+            pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+            const wrapper = document.getElementById('page-wrapper');
+            const loading = document.getElementById('loading');
+            const zoomControls = document.getElementById('zoom-controls');
+            const zoomLabel = document.getElementById('zoom-label');
+
+            const BASE_SCALE = 1.5;
+            const INITIAL_ZOOM = 0.4;
+            let cssZoom = INITIAL_ZOOM;
+
+            function applyZoom() {
+                wrapper.style.transform = 'scale(' + cssZoom + ')';
+                var h = wrapper.scrollHeight;
+                wrapper.style.marginBottom = -(h * (1 - cssZoom)) + 'px';
+                zoomLabel.innerText = Math.round(cssZoom / INITIAL_ZOOM * 100) + '%';
+            }
+
+            const loadingTask = pdfjsLib.getDocument(url);
+
+            // Show download progress
+            loadingTask.onProgress = function (progress) {
+                if (progress.total > 0) {
+                    const pct = Math.round(progress.loaded / progress.total * 100);
+                    loading.innerText = 'Downloading... ' + pct + '%';
+                } else {
+                    const mb = (progress.loaded / 1048576).toFixed(1);
+                    loading.innerText = 'Downloading... ' + mb + ' MB';
+                }
+            };
+
+            loadingTask.promise.then(pdf => {
+                loading.innerText = 'Rendering...';
+                let rendered = 0;
+                for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+                    pdf.getPage(pageNum).then(page => {
+                        const viewport = page.getViewport({ scale: BASE_SCALE });
+                        const canvas = document.createElement('canvas');
+                        const context = canvas.getContext('2d');
+                        canvas.height = viewport.height;
+                        canvas.width = viewport.width;
+                        wrapper.appendChild(canvas);
+
+                        page.render({
+                            canvasContext: context,
+                            viewport: viewport
+                        }).promise.then(() => {
+                            rendered++;
+                            if (rendered >= pdf.numPages) {
+                                loading.style.display = 'none';
+                                zoomControls.style.display = 'flex';
+                                applyZoom();
+                            } else {
+                                loading.innerText = 'Rendering... ' + rendered + '/' + pdf.numPages;
+                            }
+                        });
+                    });
+                }
+            }).catch(err => {
+                loading.innerText = 'Error loading PDF: ' + err.message;
+                console.error(err);
+            });
+
+            // Zoom via CSS transform — instant, no re-render
+            const ZOOM_STEP = INITIAL_ZOOM * 0.1;
+            document.getElementById('btn-zoom-in').addEventListener('click', () => {
+                if (cssZoom < 3.0) { cssZoom += ZOOM_STEP; applyZoom(); }
+            });
+            document.getElementById('btn-zoom-out').addEventListener('click', () => {
+                if (cssZoom > 0.2) { cssZoom -= ZOOM_STEP; applyZoom(); }
+            });
+        } else {
+            document.getElementById('loading').innerText = 'No PDF file specified.';
+        }
+    </script>
+</body>
+
+</html>

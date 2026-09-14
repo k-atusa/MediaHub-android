@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="?attr/colorSurface">
+
+    <LinearLayout style="@style/vbox"
+        android:padding="24dp"
+        android:gravity="center"
+        android:layout_marginTop="48dp"
+        android:paddingBottom="64dp">
+
+        <TextView style="@style/title"
+            android:text="MediaHub"
+            android:textSize="32sp" />
+
+        <com.google.android.material.card.MaterialCardView
+            style="@style/card"
+            android:layout_marginTop="24dp">
+
+            <LinearLayout style="@style/vbox" android:padding="20dp">
+
+                <EditText
+                    android:id="@+id/edtServerUrl"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="Server Address"
+                    android:inputType="textUri"
+                    android:singleLine="true" />
+
+                <EditText
+                    android:id="@+id/edtUsername"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="Username"
+                    android:inputType="text"
+                    android:singleLine="true"
+                    android:layout_marginTop="8dp" />
+
+                <EditText
+                    android:id="@+id/edtPassword"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="Password"
+                    android:inputType="textPassword"
+                    android:singleLine="true"
+                    android:layout_marginTop="8dp" />
+
+                <LinearLayout style="@style/hbox" android:layout_marginTop="16dp">
+                    <CheckBox
+                        android:id="@+id/chkTls"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" />
+                    <TextView style="@style/body"
+                        android:text="Ignore TLS Warning"
+                        android:textSize="14sp"
+                        android:layout_weight="1" />
+                    <ImageButton
+                        android:id="@+id/btnMemo"
+                        android:layout_width="32dp"
+                        android:layout_height="32dp"
+                        android:src="@drawable/icon_note"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Memo" />
+                </LinearLayout>
+
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <Button
+            android:id="@+id/btnLogin"
+            style="@style/btnPri"
+            android:text="Login"
+            android:layout_marginTop="24dp"
+            android:layout_width="match_parent" />
+
+        <TextView
+            android:id="@+id/txtStatus"
+            style="@style/cap"
+            android:layout_marginTop="16dp"
+            android:gravity="center" />
+
+    </LinearLayout>
+</ScrollView>
