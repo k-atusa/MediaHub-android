@@ -20,11 +20,50 @@
         android:layout_height="wrap_content"
         android:layout_gravity="center" />
 
+    <!-- Prev/Next navigation overlay -->
+    <LinearLayout
+        android:id="@+id/layoutNav"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="64dp"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:padding="4dp"
+        android:visibility="gone">
+        <Button
+            android:id="@+id/btnPrev"
+            style="@style/btnOut"
+            android:text="&lt;"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minWidth="36dp"
+            android:minHeight="36dp"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="0dp"
+            android:layout_marginEnd="12dp" />
+        <Button
+            android:id="@+id/btnNext"
+            style="@style/btnOut"
+            android:text="&gt;"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minWidth="36dp"
+            android:minHeight="36dp"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="0dp" />
+    </LinearLayout>
+
     <!-- Status overlay -->
     <TextView
         android:id="@+id/txtStatus"
         style="@style/cap"
-        android:layout_gravity="bottom|center_horizontal"
-        android:padding="16dp" />
+        android:layout_gravity="top|center_horizontal"
+        android:padding="16dp"
+        android:paddingTop="48dp" />
 
 </FrameLayout>

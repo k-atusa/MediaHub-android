@@ -31,6 +31,8 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 import java.security.cert.X509Certificate;
 
+import com.example.k7mediahub.app.CacheManager;
+
 // Core logic for auth, crypto, and network
 public class MHcore {
     // Shared pepper string
@@ -45,17 +47,21 @@ public class MHcore {
     public String uName;
     public String uHash;
     public String uMemo = "";
+    public boolean ignTLS = false;
     private byte[] uKey;
     public Map<String, byte[]> fldMap = new HashMap<>();
     private final Bencrypt.Masker masker;
     private final Bencrypt bencrypt;
     private final Opsec opsec;
 
+    // Cache manager (set externally by SvcMH)
+    public CacheManager cache;
+
     // folder structure
     public static class FolderFiles {
         public String fPid;
-        public byte[] fKey;
-        public Map<String, byte[]> flMap;
+        public byte[] fKey; // masked
+        public Map<String, byte[]> flMap; // values masked
 
         public FolderFiles(String fPid, byte[] fKey, Map<String, byte[]> flMap) {
             this.fPid = fPid;
@@ -66,6 +72,7 @@ public class MHcore {
 
     // Init core and trust all SSL
     public MHcore(boolean ignTLS) {
+        this.ignTLS = ignTLS;
         this.masker = Bencrypt.Masker.GetMasker();
         this.bencrypt = new Bencrypt();
         this.opsec = new Opsec();
@@ -100,9 +107,38 @@ public class MHcore {
         } catch (Exception ignored) {}
     }
 
+    // ===== Key Masking Helpers =====
     // Unmask master key securely
     private byte[] getUnmaskedKey() {
         return masker.XOR(uKey);
+    }
+
+    // Unmask a masked byte array, caller must zero the result after use
+    private byte[] unmask(byte[] masked) {
+        return masker.XOR(masked);
+    }
+
+    // Mask all byte[] values in a map (in-place)
+    private void maskMapValues(Map<String, byte[]> map) {
+        for (Map.Entry<String, byte[]> e : map.entrySet()) {
+            e.setValue(masker.XOR(e.getValue()));
+        }
+    }
+
+    // Create a copy of a map with all byte[] values unmasked (caller must zero values after use)
+    private Map<String, byte[]> unmaskMapCopy(Map<String, byte[]> maskedMap) {
+        Map<String, byte[]> result = new HashMap<>();
+        for (Map.Entry<String, byte[]> e : maskedMap.entrySet()) {
+            result.put(e.getKey(), masker.XOR(e.getValue()));
+        }
+        return result;
+    }
+
+    // Zero all byte[] values in a map
+    private static void zeroMap(Map<String, byte[]> map) {
+        for (byte[] v : map.values()) {
+            Arrays.fill(v, (byte) 0);
+        }
     }
 
     // Generate dedicated IV slice with incremental block counter offset
@@ -203,7 +239,7 @@ public class MHcore {
         return sb.toString();
     }
 
-    // Load local client settings from file
+    // Load local client settings from file (url, username, ignTLS, memo)
     public void LoadCfg(Context ctx) throws Exception {
         File f = new File(ctx.getFilesDir(), CFG_FILE);
         if (!f.exists())
@@ -215,23 +251,40 @@ public class MHcore {
         while ((r = in.read(b)) != -1)
             buf.write(b, 0, r);
         in.close();
-        String[] pts = buf.toString("UTF-8").split("\n", 3);
+        String[] pts = buf.toString("UTF-8").split("\n", 4);
         if (pts.length >= 2) {
             this.srvUrl = pts[0];
             this.uName = pts[1];
-            if (pts.length == 3) this.uMemo = pts[2];
+            if (pts.length >= 3) {
+                if ("1".equals(pts[2])) {
+                    this.ignTLS = true;
+                    if (pts.length == 4) this.uMemo = pts[3];
+                } else if ("0".equals(pts[2])) {
+                    this.ignTLS = false;
+                    if (pts.length == 4) this.uMemo = pts[3];
+                } else {
+                    // Legacy format compatibility (pts[2] was uMemo)
+                    this.uMemo = pts[2];
+                }
+            }
         }
     }
 
     // Save local client settings to file
-    public void SaveCfg(Context ctx, String url, String name, String memo) throws Exception {
+    public void SaveCfg(Context ctx, String url, String name, boolean ignTLS, String memo) throws Exception {
         this.srvUrl = url;
         this.uName = name;
+        this.ignTLS = ignTLS;
         this.uMemo = memo != null ? memo : "";
         File f = new File(ctx.getFilesDir(), CFG_FILE);
         FileOutputStream out = new FileOutputStream(f);
-        out.write((this.srvUrl + "\n" + this.uName + "\n" + this.uMemo).getBytes(StandardCharsets.UTF_8));
+        String data = this.srvUrl + "\n" + this.uName + "\n" + (this.ignTLS ? "1" : "0") + "\n" + this.uMemo;
+        out.write(data.getBytes(StandardCharsets.UTF_8));
         out.close();
+    }
+
+    public void SaveCfg(Context ctx, String url, String name, String memo) throws Exception {
+        SaveCfg(ctx, url, name, this.ignTLS, memo);
     }
 
     // Derive keys and set user hash
@@ -254,6 +307,48 @@ public class MHcore {
         Arrays.fill(keys[1], (byte) 0);
     }
 
+    // ===== Auto Login Key Serialization =====
+    // Export session credentials for auto-login storage: only uHash + unmasked raw uKey
+    // Returns: uHash(hex, 32 chars) + "|" + Base64(rawUKey)
+    public byte[] exportAutoLoginData() {
+        if (uHash == null || uKey == null) return null;
+        byte[] rawKey = getUnmaskedKey();
+        if (rawKey == null) return null;
+        String b64Key = java.util.Base64.getEncoder().encodeToString(rawKey);
+        Arrays.fill(rawKey, (byte) 0);
+        String data = uHash + "|" + b64Key;
+        return data.getBytes(StandardCharsets.UTF_8);
+    }
+
+    // Restore session from auto-login data (skips Argon2 KDF)
+    public boolean restoreAutoLogin(byte[] data, String url, String name, boolean ignTLS) throws Exception {
+        String str = new String(data, StandardCharsets.UTF_8);
+        String[] parts = str.split("\\|", 4);
+        byte[] rawKey;
+        if (parts.length == 2) {
+            // New format: uHash + "|" + b64Key (raw key)
+            this.uHash = parts[0];
+            rawKey = java.util.Base64.getDecoder().decode(parts[1]);
+        } else if (parts.length == 4) {
+            // Legacy format: uHash + "|" + srvUrl + "|" + uName + "|" + b64Key
+            this.uHash = parts[0];
+            rawKey = java.util.Base64.getDecoder().decode(parts[3]);
+        } else {
+            return false;
+        }
+
+        // Mask the raw key with the current process's Masker instance
+        this.uKey = masker.XOR(rawKey);
+        Arrays.fill(rawKey, (byte) 0);
+
+        this.srvUrl = (url != null && !url.isEmpty()) ? url : (parts.length == 4 ? parts[1] : "");
+        this.uName = (name != null && !name.isEmpty()) ? name : (parts.length == 4 ? parts[2] : "");
+        this.ignTLS = ignTLS;
+
+        if (ignTLS) trustAllSsl();
+        return true;
+    }
+
     // Check account existence
     public boolean CheckAcc() throws Exception {
         URL u = new URL(srvUrl + "/api/userdata/" + uHash);
@@ -269,56 +364,89 @@ public class MHcore {
         // download folder map
         if (uHash == null) throw new IllegalStateException("Not authenticated");
         URL u = new URL(srvUrl + "/api/userdata/" + uHash);
-        HttpURLConnection c = (HttpURLConnection) u.openConnection();
-        c.setRequestMethod("GET");
-        int resCode = c.getResponseCode();
 
-        if (resCode == 200) { // download stream
-            InputStream in = c.getInputStream();
-            ByteArrayOutputStream buf = new ByteArrayOutputStream();
-            byte[] b = new byte[8192];
-            int r;
-            while ((r = in.read(b)) != -1)
-                buf.write(b, 0, r);
-            in.close();
-            byte[] content = buf.toByteArray();
-
-            // decrypt and unpack
-            if (content.length > 0) {
-                byte[] rawUK = getUnmaskedKey();
-                byte[] keySlice = Arrays.copyOfRange(rawUK, 0, 32);
-                Bencrypt.SymMaster sm = new Bencrypt.SymMaster("gcm1", keySlice);
-                this.fldMap = opsec.DecodeCfg(sm.DeBin(content));
-                Arrays.fill(rawUK, (byte) 0);
-                Arrays.fill(keySlice, (byte) 0);
-            } else {
-                this.fldMap = new HashMap<>();
-            }
-
-        } else if (resCode == 404) {
-            this.fldMap = new HashMap<>();
+        // Try cache first, fetch if missing
+        byte[] content = null;
+        if (cache != null) {
+            content = cache.getCachedOrFetch("userdata", uHash, () -> {
+                HttpURLConnection conn = (HttpURLConnection) u.openConnection();
+                conn.setRequestMethod("GET");
+                int code = conn.getResponseCode();
+                if (code == 200) {
+                    InputStream in = conn.getInputStream();
+                    ByteArrayOutputStream buf = new ByteArrayOutputStream();
+                    byte[] b = new byte[8192];
+                    int r;
+                    while ((r = in.read(b)) != -1) buf.write(b, 0, r);
+                    in.close();
+                    conn.disconnect();
+                    return buf.toByteArray();
+                } else if (code == 404) {
+                    conn.disconnect();
+                    return new byte[0];
+                } else {
+                    conn.disconnect();
+                    throw new RuntimeException("Connection Error: code " + code);
+                }
+            });
         } else {
-            throw new RuntimeException("Connection Error: code " + resCode);
+            HttpURLConnection c = (HttpURLConnection) u.openConnection();
+            c.setRequestMethod("GET");
+            int resCode = c.getResponseCode();
+            if (resCode == 200) {
+                InputStream in = c.getInputStream();
+                ByteArrayOutputStream buf = new ByteArrayOutputStream();
+                byte[] b = new byte[8192];
+                int r;
+                while ((r = in.read(b)) != -1) buf.write(b, 0, r);
+                in.close();
+                content = buf.toByteArray();
+            } else if (resCode == 404) {
+                content = new byte[0];
+            } else {
+                c.disconnect();
+                throw new RuntimeException("Connection Error: code " + resCode);
+            }
+            c.disconnect();
         }
-        c.disconnect();
+
+        // decrypt and unpack
+        if (content != null && content.length > 0) {
+            byte[] rawUK = getUnmaskedKey();
+            byte[] keySlice = Arrays.copyOfRange(rawUK, 0, 32);
+            Bencrypt.SymMaster sm = new Bencrypt.SymMaster("gcm1", keySlice);
+            this.fldMap = opsec.DecodeCfg(sm.DeBin(content));
+            Arrays.fill(rawUK, (byte) 0);
+            Arrays.fill(keySlice, (byte) 0);
+            // Mask all folder key values at rest
+            maskMapValues(this.fldMap);
+        } else {
+            this.fldMap = new HashMap<>();
+        }
+
         return this.fldMap;
     }
 
     // Create a new folder storage container on server
     public void MkFld(String name) throws Exception {
+        // Check with unmasked keys
         if (this.fldMap.containsKey(name)) throw new IllegalArgumentException("Folder name already exists!");
         byte[] folderKey = new byte[44];
         System.arraycopy(bencrypt.Random(32), 0, folderKey, 0, 32);
         System.arraycopy(bencrypt.Random(12), 0, folderKey, 32, 12);
-        this.fldMap.put(name, folderKey);
+        // Store masked
+        this.fldMap.put(name, masker.XOR(folderKey));
 
-        // make new folder map
+        // Unmask all values for encoding, then zero
+        Map<String, byte[]> plainMap = unmaskMapCopy(this.fldMap);
+
         byte[] rawUK = getUnmaskedKey();
         byte[] keySlice = Arrays.copyOfRange(rawUK, 0, 32);
         Bencrypt.SymMaster sm = new Bencrypt.SymMaster("gcm1", keySlice);
-        byte[] enc = sm.EnBin(opsec.EncodeCfg(this.fldMap));
+        byte[] enc = sm.EnBin(opsec.EncodeCfg(plainMap));
         Arrays.fill(rawUK, (byte) 0);
         Arrays.fill(keySlice, (byte) 0);
+        zeroMap(plainMap);
 
         // upload folder map
         URL u = new URL(srvUrl + "/api/userdata/" + uHash);
@@ -334,41 +462,72 @@ public class MHcore {
             throw new RuntimeException("Failed to create folder: code " + c.getResponseCode());
         }
         c.disconnect();
+
+        // Invalidate userdata cache
+        if (cache != null) cache.put("userdata", uHash, enc);
     }
 
     // Fetch and decrypt file mapping for specific folder
     public FolderFiles GetFiles(String name) throws Exception {
         if (!this.fldMap.containsKey(name)) throw new IllegalArgumentException("Folder not found");
-        byte[] fKey = this.fldMap.get(name);
+        // Unmask folder key for use
+        byte[] fKey = unmask(this.fldMap.get(name));
         String fPid = ObjPid(fKey);
 
-        // download folder map
-        URL u = new URL(srvUrl + "/api/storage/" + fPid + "/names");
-        HttpURLConnection c = (HttpURLConnection) u.openConnection();
-        c.setRequestMethod("GET");
-        int resCode = c.getResponseCode();
-        Map<String, byte[]> flMap = new HashMap<>();
+        byte[] content = null;
+        String cacheKey = fPid + "/names";
 
-        if (resCode == 200) { // decrypt
-            InputStream in = c.getInputStream();
-            ByteArrayOutputStream buf = new ByteArrayOutputStream();
-            byte[] b = new byte[8192];
-            int r;
-            while ((r = in.read(b)) != -1)
-                buf.write(b, 0, r);
-            in.close();
-            byte[] content = buf.toByteArray();
-
-            // decrypt and unpack
-            if (content.length > 0) {
-                byte[] keySlice = Arrays.copyOfRange(fKey, 0, 32);
-                Bencrypt.SymMaster sm = new Bencrypt.SymMaster("gcm1", keySlice);
-                flMap = opsec.DecodeCfg(sm.DeBin(content));
-                Arrays.fill(keySlice, (byte) 0);
+        // Try cache first
+        if (cache != null) {
+            URL fUrl = new URL(srvUrl + "/api/storage/" + fPid + "/names");
+            content = cache.getCachedOrFetch("folders", cacheKey, () -> {
+                HttpURLConnection conn = (HttpURLConnection) fUrl.openConnection();
+                conn.setRequestMethod("GET");
+                int code = conn.getResponseCode();
+                if (code == 200) {
+                    InputStream in = conn.getInputStream();
+                    ByteArrayOutputStream buf = new ByteArrayOutputStream();
+                    byte[] b = new byte[8192];
+                    int r;
+                    while ((r = in.read(b)) != -1) buf.write(b, 0, r);
+                    in.close();
+                    conn.disconnect();
+                    return buf.toByteArray();
+                }
+                conn.disconnect();
+                return new byte[0];
+            });
+        } else {
+            URL u = new URL(srvUrl + "/api/storage/" + fPid + "/names");
+            HttpURLConnection c = (HttpURLConnection) u.openConnection();
+            c.setRequestMethod("GET");
+            int resCode = c.getResponseCode();
+            if (resCode == 200) {
+                InputStream in = c.getInputStream();
+                ByteArrayOutputStream buf = new ByteArrayOutputStream();
+                byte[] b = new byte[8192];
+                int r;
+                while ((r = in.read(b)) != -1) buf.write(b, 0, r);
+                in.close();
+                content = buf.toByteArray();
             }
+            c.disconnect();
         }
-        c.disconnect();
-        return new FolderFiles(fPid, fKey, flMap);
+
+        Map<String, byte[]> flMap = new HashMap<>();
+        if (content != null && content.length > 0) {
+            byte[] keySlice = Arrays.copyOfRange(fKey, 0, 32);
+            Bencrypt.SymMaster sm = new Bencrypt.SymMaster("gcm1", keySlice);
+            flMap = opsec.DecodeCfg(sm.DeBin(content));
+            Arrays.fill(keySlice, (byte) 0);
+            // Mask all file info values at rest
+            maskMapValues(flMap);
+        }
+
+        // Store fKey as masked, zero plain copy
+        byte[] maskedFKey = masker.XOR(fKey);
+        Arrays.fill(fKey, (byte) 0);
+        return new FolderFiles(fPid, maskedFKey, flMap);
     }
 
     // Encrypt, pad, and upload media file along with thumbnail to server
@@ -462,16 +621,22 @@ public class MHcore {
         byte[] flInfo = new byte[52];
         System.arraycopy(fk, 0, flInfo, 0, 44);
         System.arraycopy(sizeBuf, 0, flInfo, 44, 8);
-        ff.flMap.put(name, flInfo);
+        // Store masked
+        ff.flMap.put(name, masker.XOR(flInfo));
 
-        // encrypt file map
-        byte[] fKeySlice = Arrays.copyOfRange(ff.fKey, 0, 32);
+        // Unmask folder key and file map for encoding
+        byte[] plainFKey = unmask(ff.fKey);
+        Map<String, byte[]> plainFlMap = unmaskMapCopy(ff.flMap);
+
+        byte[] fKeySlice = Arrays.copyOfRange(plainFKey, 0, 32);
         Bencrypt.SymMaster sm = new Bencrypt.SymMaster("gcm1", fKeySlice);
-        byte[] encMap = sm.EnBin(opsec.EncodeCfg(ff.flMap));
+        byte[] encMap = sm.EnBin(opsec.EncodeCfg(plainFlMap));
         Arrays.fill(fKeySlice, (byte) 0);
         Arrays.fill(fkSlice, (byte) 0);
+        Arrays.fill(plainFKey, (byte) 0);
+        zeroMap(plainFlMap);
 
-        // uplaod file map
+        // upload file map
         URL uMap = new URL(srvUrl + "/api/storage/" + ff.fPid + "/names");
         HttpURLConnection cMap = (HttpURLConnection) uMap.openConnection();
         cMap.setRequestMethod("POST");
@@ -484,19 +649,23 @@ public class MHcore {
 
         if (cMap.getResponseCode() != 200) throw new RuntimeException("Failed to sync metadata: code " + cMap.getResponseCode());
         cMap.disconnect();
+
+        // Update folder cache
+        if (cache != null) cache.put("folders", ff.fPid + "/names", encMap);
         return true;
     }
 
     // Download media file to Download folder
     public String DnFile(Context ctx, FolderFiles ff, String fileName) throws Exception {
-        // check validity, get file key
+        // check validity, get file key (unmask)
         if (!ff.flMap.containsKey(fileName)) throw new IllegalArgumentException("File not found in metadata");
-        byte[] flInfo = ff.flMap.get(fileName);
+        byte[] flInfo = unmask(ff.flMap.get(fileName));
 
         byte[] fk = Arrays.copyOfRange(flInfo, 0, 44);
         byte[] sizeBytes = Arrays.copyOfRange(flInfo, 44, 52);
         long origSz = opsec.DecodeInt(sizeBytes);
         String fpid = ObjPid(fk);
+        Arrays.fill(flInfo, (byte) 0);
 
         byte[] fkSlice = Arrays.copyOfRange(fk, 0, 32);
         Bencrypt.SymMaster smx = new Bencrypt.SymMaster("gcmx1", fkSlice);
@@ -549,65 +718,89 @@ public class MHcore {
 
     // Download and decrypt with progress reporting
     public byte[] DnMem(FolderFiles ff, String fileName, boolean isThumbnail, ProgressListener listener) throws Exception {
-        // check validity, get file key
+        // check validity, get file key (unmask)
         if (!ff.flMap.containsKey(fileName)) throw new IllegalArgumentException("File not found in metadata");
-        byte[] flInfo = ff.flMap.get(fileName);
+        byte[] flInfo = unmask(ff.flMap.get(fileName));
 
         byte[] fk = Arrays.copyOfRange(flInfo, 0, 44);
         byte[] sizeBytes = Arrays.copyOfRange(flInfo, 44, 52);
         long origSz = opsec.DecodeInt(sizeBytes);
         String fpid = ObjPid(fk);
+        Arrays.fill(flInfo, (byte) 0);
 
         // check if thumbnail
         String typ = isThumbnail ? "thumb" : "dat";
-        URL u = new URL(srvUrl + "/api/media/" + ff.fPid + "/" + fpid + "/" + typ);
-        HttpURLConnection c = (HttpURLConnection) u.openConnection();
-        c.setRequestMethod("GET");
-        int resCode = c.getResponseCode();
+        String cacheKeyThumb = ff.fPid + "/" + fpid + "/" + typ;
 
-        // download
-        if (resCode == 200 || resCode == 206) {
-            long total = c.getContentLengthLong();
-            InputStream in = c.getInputStream();
-            ByteArrayOutputStream bos = new ByteArrayOutputStream();
-            byte[] buf = new byte[65536];
-            int r;
-            long cur = 0;
-            int lastPct = -1;
-            while ((r = in.read(buf)) != -1) {
-                bos.write(buf, 0, r);
-                cur += r;
-                if (listener != null && total > 0) {
-                    int pct = (int) (cur * 100 / total);
-                    if (pct != lastPct) {
-                        lastPct = pct;
-                        listener.onProgress(pct);
+        // Try cache for thumbnails (encrypted bytes)
+        byte[] downloaded = null;
+        if (isThumbnail && cache != null) {
+            downloaded = cache.get("thumbs", cacheKeyThumb);
+        }
+
+        if (downloaded == null) {
+            URL u = new URL(srvUrl + "/api/media/" + ff.fPid + "/" + fpid + "/" + typ);
+            HttpURLConnection c = (HttpURLConnection) u.openConnection();
+            c.setRequestMethod("GET");
+            int resCode = c.getResponseCode();
+
+            if (resCode == 200 || resCode == 206) {
+                long total = c.getContentLengthLong();
+                InputStream in = c.getInputStream();
+                ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                byte[] buf = new byte[65536];
+                int r;
+                long cur = 0;
+                int lastPct = -1;
+                while ((r = in.read(buf)) != -1) {
+                    bos.write(buf, 0, r);
+                    cur += r;
+                    if (listener != null && total > 0) {
+                        int pct = (int) (cur * 100 / total);
+                        if (pct != lastPct) {
+                            lastPct = pct;
+                            listener.onProgress(pct);
+                        }
                     }
                 }
-            }
-            in.close();
-            c.disconnect();
+                in.close();
+                c.disconnect();
+                downloaded = bos.toByteArray();
 
-            // decrypt in-memory
-            byte[] downloaded = bos.toByteArray();
-            byte[] fkSlice = Arrays.copyOfRange(fk, 0, 32);
-            byte[] plainData;
-            if (isThumbnail) {
-                Bencrypt.SymMaster sm = new Bencrypt.SymMaster("gcm1", fkSlice);
-                plainData = sm.DeBin(downloaded);
+                // Cache thumbnail encrypted bytes
+                if (isThumbnail && cache != null && downloaded.length > 0) {
+                    cache.put("thumbs", cacheKeyThumb, downloaded);
+                }
             } else {
-                Bencrypt.SymMaster smx = new Bencrypt.SymMaster("gcmx1", fkSlice);
-                long ciphSz = smx.AfterSize(origSz);
-                byte[] pureEncBytes = Arrays.copyOfRange(downloaded, 0, (int) ciphSz);
-                plainData = smx.DeBin(pureEncBytes);
+                c.disconnect();
+                throw new RuntimeException("Download failed: " + resCode);
             }
-            Arrays.fill(fkSlice, (byte) 0);
-            return plainData;
-
-        } else {
-            c.disconnect();
-            throw new RuntimeException("Download failed: " + resCode);
         }
+
+        // decrypt in-memory
+        byte[] fkSlice = Arrays.copyOfRange(fk, 0, 32);
+        byte[] plainData;
+        if (isThumbnail) {
+            Bencrypt.SymMaster sm = new Bencrypt.SymMaster("gcm1", fkSlice);
+            plainData = sm.DeBin(downloaded);
+        } else {
+            Bencrypt.SymMaster smx = new Bencrypt.SymMaster("gcmx1", fkSlice);
+            long ciphSz = smx.AfterSize(origSz);
+            byte[] pureEncBytes = Arrays.copyOfRange(downloaded, 0, (int) ciphSz);
+            plainData = smx.DeBin(pureEncBytes);
+        }
+        Arrays.fill(fkSlice, (byte) 0);
+        return plainData;
+    }
+
+    // Get original file size from masked flMap entry
+    public long GetFileSize(FolderFiles ff, String fileName) {
+        if (!ff.flMap.containsKey(fileName)) return -1;
+        byte[] flInfo = unmask(ff.flMap.get(fileName));
+        byte[] sizeBytes = Arrays.copyOfRange(flInfo, 44, 52);
+        long sz = opsec.DecodeInt(sizeBytes);
+        Arrays.fill(flInfo, (byte) 0);
+        return sz;
     }
 
     // Partial decrypt for streaming

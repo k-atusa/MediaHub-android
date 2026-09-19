@@ -1,7 +1,6 @@
 package com.example.k7mediahub.view;
 
 import android.content.Intent;
-import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.os.Bundle;
 import android.view.LayoutInflater;
@@ -9,11 +8,13 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.CheckBox;
+import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.TextView;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -24,8 +25,11 @@ import com.example.k7mediahub.SVCC1;
 import com.example.k7mediahub.app.SvcMH;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 // File list activity
@@ -34,10 +38,15 @@ public class FileView extends AppCompatActivity {
     private TextView tTitle, tStat;
     private FileAdp adp;
     private String fld;
-    private final List<String> items = new ArrayList<>();
+    private final List<String> allItems = new ArrayList<>(); // all files (full list)
+    private final List<String> items = new ArrayList<>(); // filtered display list
     private final Set<Integer> sel = new HashSet<>();
     private int pg = 0;
     private ActivityResultLauncher<Intent> lch;
+
+    // Keyword filter state
+    private final List<String> availableKeywords = new ArrayList<>();
+    private final Set<String> selectedKeywords = new HashSet<>();
 
     // Standard lifecycle
     @Override
@@ -55,6 +64,7 @@ public class FileView extends AppCompatActivity {
         Button bDn = findViewById(R.id.btnDownload);
         Button bPre = findViewById(R.id.btnPrev);
         Button bNxt = findViewById(R.id.btnNext);
+        ImageButton bKwBottom = findViewById(R.id.btnKeywordBottom);
 
         tTitle.setText(fld);
         adp = new FileAdp();
@@ -63,6 +73,9 @@ public class FileView extends AppCompatActivity {
 
         bPre.setOnClickListener(v -> { if (pg > 0) { pg--; update(); } });
         bNxt.setOnClickListener(v -> { if (pg < (items.size() - 1) / 30) { pg++; update(); } });
+
+        // Keyword filter button (bottom bar)
+        bKwBottom.setOnClickListener(v -> showKeywordDialog());
 
         // File selection result handler
         lch = registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), res -> {
@@ -92,12 +105,13 @@ public class FileView extends AppCompatActivity {
             switch (ev.action) {
                 case "FILES_LOADED":
                     if (!d.getString("folder", "").equals(fld)) break;
-                    items.clear();
+                    allItems.clear();
                     ArrayList<String> ns = d.getStringArrayList("names");
-                    if (ns != null) items.addAll(ns);
+                    if (ns != null) allItems.addAll(ns);
                     sel.clear();
                     pg = 0;
-                    update();
+                    rebuildKeywords();
+                    applyFilter();
                     break;
                 case "UPLOAD_PROGRESS":
                     SVCC1.getChan().SetString(1, "Up: " + d.getInt("current") + "/" + d.getInt("total"));
@@ -128,6 +142,11 @@ public class FileView extends AppCompatActivity {
             }
         });
 
+        // Thumbnail refresh observer
+        SVCC1.getChan().IntSlots[1].observe(this, cnt -> {
+            if (adp != null) adp.notifyDataSetChanged();
+        });
+
         bAdd.setOnClickListener(v -> IO1.SelectFile(lch, true));
         bDn.setOnClickListener(v -> {
             if (sel.isEmpty()) return;
@@ -148,6 +167,105 @@ public class FileView extends AppCompatActivity {
         refresh();
     }
 
+    // ===== Keyword Filter =====
+    private void rebuildKeywords() {
+        availableKeywords.clear();
+        Map<String, Integer> wordCount = new HashMap<>();
+
+        for (String fileName : allItems) {
+            // Remove extension
+            String nameOnly = fileName;
+            int dotIdx = fileName.lastIndexOf('.');
+            if (dotIdx > 0) nameOnly = fileName.substring(0, dotIdx);
+
+            // Split by . _ - space, lowercase
+            String[] tokens = nameOnly.toLowerCase().split("[._\\-\\s]+");
+            // Count unique tokens per file
+            Set<String> unique = new HashSet<>();
+            for (String t : tokens) {
+                if (!t.isEmpty()) unique.add(t);
+            }
+            for (String t : unique) {
+                wordCount.put(t, wordCount.getOrDefault(t, 0) + 1);
+            }
+        }
+
+        // Keywords = words appearing 4+ times
+        for (Map.Entry<String, Integer> e : wordCount.entrySet()) {
+            if (e.getValue() >= 4) {
+                availableKeywords.add(e.getKey());
+            }
+        }
+        Collections.sort(availableKeywords);
+
+        // Remove keywords that no longer exist
+        selectedKeywords.retainAll(new HashSet<>(availableKeywords));
+    }
+
+    private void applyFilter() {
+        items.clear();
+        if (selectedKeywords.isEmpty()) {
+            items.addAll(allItems);
+        } else {
+            for (String fileName : allItems) {
+                String nameOnly = fileName;
+                int dotIdx = fileName.lastIndexOf('.');
+                if (dotIdx > 0) nameOnly = fileName.substring(0, dotIdx);
+                String lower = nameOnly.toLowerCase();
+
+                // File must contain ALL selected keywords in its tokens
+                String[] tokens = lower.split("[._\\-\\s]+");
+                Set<String> tokenSet = new HashSet<>();
+                for (String t : tokens) {
+                    if (!t.isEmpty()) tokenSet.add(t);
+                }
+
+                boolean match = true;
+                for (String kw : selectedKeywords) {
+                    if (!tokenSet.contains(kw)) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) items.add(fileName);
+            }
+        }
+        sel.clear();
+        pg = 0;
+        update();
+    }
+
+    private void showKeywordDialog() {
+        if (availableKeywords.isEmpty()) {
+            tStat.setText("No keywords found (need 4+ occurrences)");
+            return;
+        }
+
+        String[] kwArray = new String[availableKeywords.size()];
+        boolean[] checked = new boolean[availableKeywords.size()];
+        for (int i = 0; i < availableKeywords.size(); i++) {
+            kwArray[i] = availableKeywords.get(i);
+            checked[i] = selectedKeywords.contains(availableKeywords.get(i));
+        }
+
+        new AlertDialog.Builder(this)
+            .setTitle("Keyword Filter")
+            .setMultiChoiceItems(kwArray, checked, (dialog, which, isChecked) -> {
+                if (isChecked) {
+                    selectedKeywords.add(availableKeywords.get(which));
+                } else {
+                    selectedKeywords.remove(availableKeywords.get(which));
+                }
+            })
+            .setPositiveButton("Apply", (d, w) -> applyFilter())
+            .setNeutralButton("Clear All", (d, w) -> {
+                selectedKeywords.clear();
+                applyFilter();
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
     // Refresh data
     private void refresh() {
         Bundle b = new Bundle();
@@ -158,7 +276,8 @@ public class FileView extends AppCompatActivity {
     // Update UI
     private void update() {
         adp.notifyDataSetChanged();
-        tStat.setText(items.size() + " Files");
+        String filterText = selectedKeywords.isEmpty() ? "" : " [filtered]";
+        tStat.setText(items.size() + " Files" + filterText);
         View pnl = findViewById(R.id.layoutPagination);
         pnl.setVisibility(items.size() > 30 ? View.VISIBLE : View.GONE);
         ((TextView) findViewById(R.id.txtPageInfo)).setText((pg + 1) + " / " + ((items.size() + 29) / 30));
@@ -177,9 +296,12 @@ public class FileView extends AppCompatActivity {
                 t = v.findViewById(R.id.txtFileName);
                 v.setOnClickListener(view -> {
                     int p = pg * 30 + getAdapterPosition();
+                    if (p < 0 || p >= items.size()) return;
                     Intent it = new Intent(FileView.this, MediaView.class);
                     it.putExtra("folder", fld);
                     it.putExtra("file", items.get(p));
+                    // Pass entire filtered file list for navigation
+                    it.putStringArrayListExtra("fileList", new ArrayList<>(items));
                     startActivity(it);
                 });
             }
@@ -191,6 +313,7 @@ public class FileView extends AppCompatActivity {
         @Override
         public void onBindViewHolder(VH h, int p) {
             int gp = pg * 30 + p;
+            if (gp >= items.size()) return;
             String n = items.get(gp);
             h.t.setText(n);
             h.c.setOnCheckedChangeListener(null);

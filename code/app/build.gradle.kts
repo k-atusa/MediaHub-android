@@ -14,8 +14,8 @@ android {
         applicationId = "com.example.k7mediahub"
         minSdk = 35
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.4.1"
+        versionCode = 4
+        versionName = "1.4.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -41,6 +41,7 @@ dependencies {
     implementation(libs.bcprov.jdk18on)
     implementation(libs.documentfile)
     implementation(libs.material)
+    implementation(libs.biometric)
     testImplementation(libs.junit)
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(libs.ext.junit)

@@ -45,6 +45,10 @@ public class SvcMH extends Service {
     public static byte[] mediaData;
     public static final ConcurrentHashMap<String, byte[]> thumbCache = new ConcurrentHashMap<>();
     public static final ConcurrentHashMap<String, MHcore.FolderFiles> ffCache = new ConcurrentHashMap<>();
+    public static CacheManager cacheManager;
+
+    // Prefetch data for next media (image only, in-memory decrypted)
+    public static final ConcurrentHashMap<String, byte[]> prefetchData = new ConcurrentHashMap<>();
 
     private ExecutorService executor;
     private static final String CHANNEL_ID = "svc_mh";
@@ -68,6 +72,8 @@ public class SvcMH extends Service {
     public void onCreate() {
         super.onCreate();
         executor = Executors.newFixedThreadPool(4);
+        cacheManager = new CacheManager(getApplicationContext());
+        cacheManager.evictExpired();
         createNotifChannel();
         startForeground(NOTIF_ID, buildNotif("MediaHub JE Preparing"));
         SVCC1.getChan().ToSvcBus.observeForever(cmdObserver);
@@ -96,6 +102,7 @@ public class SvcMH extends Service {
         mediaData = null;
         thumbCache.clear();
         ffCache.clear();
+        prefetchData.clear();
         super.onDestroy();
     }
 
@@ -105,6 +112,9 @@ public class SvcMH extends Service {
         switch (event.action) {
             case "LOGIN":
                 doLogin(d);
+                break;
+            case "AUTO_LOGIN":
+                doAutoLogin(d);
                 break;
             case "GET_FOLDERS":
                 doGetFolders();
@@ -123,6 +133,9 @@ public class SvcMH extends Service {
                 break;
             case "STREAM_MEDIA":
                 doStreamMedia(d);
+                break;
+            case "PREFETCH_MEDIA":
+                doPrefetchMedia(d);
                 break;
         }
     }
@@ -143,6 +156,7 @@ public class SvcMH extends Service {
         } catch (Exception ignored) {}
 
         core = new MHcore(ignTLS);
+        core.cache = cacheManager;
         core.srvUrl = url;
         core.uMemo = savedMemo;
         core.Login(name, pw);
@@ -152,7 +166,66 @@ public class SvcMH extends Service {
             sendToMain("LOGIN_FAIL", bundleMsg("Cannot find account"));
             return;
         }
-        core.SaveCfg(getApplicationContext(), url, name, core.uMemo);
+        core.SaveCfg(getApplicationContext(), url, name, ignTLS, core.uMemo);
+
+        // Start local streaming proxy
+        if (streamer != null)
+            streamer.stop();
+        streamer = new LocalStreamer();
+        streamer.start(core);
+
+        // Export auto-login data if requested
+        byte[] autoData = core.exportAutoLoginData();
+        Bundle result = new Bundle();
+        if (autoData != null) {
+            result.putByteArray("autoLoginData", autoData);
+        }
+        result.putBoolean("ignTLS", ignTLS);
+
+        updateNotif("MediaHub JE Service");
+        sendToMain("LOGIN_OK", result);
+    }
+
+    // ===== Auto Login =====
+    private void doAutoLogin(Bundle d) throws Exception {
+        byte[] loginData = d.getByteArray("loginData");
+        String url = d.getString("url", "");
+        String name = d.getString("name", "");
+        boolean ignTLS = d.getBoolean("ignTLS", false);
+        if (loginData == null) {
+            sendToMain("LOGIN_FAIL", bundleMsg("No auto-login data"));
+            return;
+        }
+
+        // Preserve existing memo and fallback for url/name from saved config
+        String savedMemo = "";
+        try {
+            MHcore tmp = new MHcore(false);
+            tmp.LoadCfg(getApplicationContext());
+            savedMemo = tmp.uMemo;
+            if (url.isEmpty()) url = tmp.srvUrl;
+            if (name.isEmpty()) name = tmp.uName;
+        } catch (Exception ignored) {}
+
+        core = new MHcore(ignTLS);
+        core.cache = cacheManager;
+        core.srvUrl = url;
+        core.uName = name;
+        core.uMemo = savedMemo;
+
+        if (!core.restoreAutoLogin(loginData, url, name, ignTLS)) {
+            core = null;
+            sendToMain("LOGIN_FAIL", bundleMsg("Invalid auto-login data"));
+            return;
+        }
+
+        if (!core.CheckAcc()) {
+            core = null;
+            sendToMain("LOGIN_FAIL", bundleMsg("Account not found"));
+            return;
+        }
+
+        core.SaveCfg(getApplicationContext(), url, name, ignTLS, core.uMemo);
 
         // Start local streaming proxy
         if (streamer != null)
@@ -325,25 +398,39 @@ public class SvcMH extends Service {
         result.putString("fileName", fileName);
 
         if ("image".equals(type) || "text".equals(type)) {
-            // Download entire file into memory with progress
-            MHcore.ProgressListener progListener = pct ->
-                    SVCC1.getChan().SetInt(0, pct);
-            SVCC1.getChan().SetInt(0, 0);
-            mediaData = core.DnMem(ff, fileName, false, progListener);
-            result.putInt("dataSize", mediaData != null ? mediaData.length : 0);
-            SVCC1.getChan().SetInt(0, 100);
+            // Check prefetch data first
+            String prefetchKey = folder + "/" + fileName;
+            byte[] prefetched = prefetchData.remove(prefetchKey);
+
+            if (prefetched != null) {
+                mediaData = prefetched;
+                result.putInt("dataSize", mediaData.length);
+                SVCC1.getChan().SetInt(0, 100);
+            } else {
+                // Download entire file into memory with progress
+                MHcore.ProgressListener progListener = pct ->
+                        SVCC1.getChan().SetInt(0, pct);
+                SVCC1.getChan().SetInt(0, 0);
+                mediaData = core.DnMem(ff, fileName, false, progListener);
+                result.putInt("dataSize", mediaData != null ? mediaData.length : 0);
+                SVCC1.getChan().SetInt(0, 100);
+            }
 
         } else if ("video".equals(type) || "pdf".equals(type)) {
-            // Set up streaming session
-            byte[] flInfo = ff.flMap.get(fileName);
-            if (flInfo == null)
+            // Set up streaming session — unmask file info for key extraction
+            byte[] maskedFlInfo = ff.flMap.get(fileName);
+            if (maskedFlInfo == null)
                 throw new IllegalArgumentException("Cannot find filemeta");
 
+            // Unmask to get plain flInfo
+            com.example.k7mediahub.Bencrypt.Masker msk = com.example.k7mediahub.Bencrypt.Masker.GetMasker();
+            byte[] flInfo = msk.XOR(maskedFlInfo);
             byte[] fk = Arrays.copyOfRange(flInfo, 0, 44);
             String fId = core.ObjPid(fk);
             byte[] sizeBytes = Arrays.copyOfRange(flInfo, 44, 52);
             Opsec opsec = new Opsec();
             long origSz = opsec.DecodeInt(sizeBytes);
+            Arrays.fill(flInfo, (byte) 0);
 
             String mime;
             if ("pdf".equals(type)) {
@@ -373,6 +460,42 @@ public class SvcMH extends Service {
         }
 
         sendToMain("MEDIA_READY", result);
+    }
+
+    // ===== Prefetch Media =====
+    private void doPrefetchMedia(Bundle d) throws Exception {
+        requireCore();
+        String folder = d.getString("folder", "");
+        String fileName = d.getString("file", "");
+
+        MHcore.FolderFiles ff = ffCache.get(folder);
+        if (ff == null) {
+            ff = core.GetFiles(folder);
+            ffCache.put(folder, ff);
+        }
+
+        // Only prefetch images <= 10MB
+        long fileSize = core.GetFileSize(ff, fileName);
+        if (fileSize < 0 || fileSize > 10 * 1024 * 1024) return;
+
+        String ext = "";
+        int dotIdx = fileName.lastIndexOf('.');
+        if (dotIdx > 0) ext = fileName.substring(dotIdx + 1).toLowerCase();
+        if (!Arrays.asList("jpg", "jpeg", "png", "gif", "webp", "bmp").contains(ext)) return;
+
+        String prefetchKey = folder + "/" + fileName;
+        if (prefetchData.containsKey(prefetchKey)) return; // already prefetched
+
+        try {
+            byte[] data = core.DnMem(ff, fileName, false);
+            if (data != null) {
+                // Keep only 1 prefetch at a time to conserve memory
+                prefetchData.clear();
+                prefetchData.put(prefetchKey, data);
+            }
+        } catch (Exception ignored) {
+            // Prefetch failure is non-critical
+        }
     }
 
     // ===== Helpers =====

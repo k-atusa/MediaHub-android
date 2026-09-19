@@ -12,6 +12,8 @@ import android.webkit.CookieManager;
 import android.webkit.WebChromeClient;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Button;
+import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
@@ -22,13 +24,22 @@ import com.example.k7mediahub.SVCC1;
 import com.example.k7mediahub.app.SvcMH;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
 
 // Media viewer activity
 public class MediaView extends AppCompatActivity {
     private WebView web;
     private ProgressBar prog;
     private TextView tStat;
+    private LinearLayout layoutNav;
+    private Button btnPrev, btnNext;
     private boolean isVideo;
+
+    private String folder;
+    private String currentFile;
+    private ArrayList<String> fileList;
+    private int currentIndex;
 
     // Standard lifecycle
     @Override
@@ -39,6 +50,9 @@ public class MediaView extends AppCompatActivity {
         web = findViewById(R.id.webMedia);
         prog = findViewById(R.id.progressMedia);
         tStat = findViewById(R.id.txtStatus);
+        layoutNav = findViewById(R.id.layoutNav);
+        btnPrev = findViewById(R.id.btnPrev);
+        btnNext = findViewById(R.id.btnNext);
 
         web.setWebViewClient(new WebViewClient());
         web.setWebChromeClient(new WebChromeClient() {
@@ -56,6 +70,7 @@ public class MediaView extends AppCompatActivity {
                 cView.setFitsSystemWindows(true);
                 ((ViewGroup) getWindow().getDecorView()).addView(cView, new ViewGroup.LayoutParams(-1, -1));
                 web.setVisibility(View.GONE);
+                layoutNav.setVisibility(View.GONE);
                 
                 // Force landscape for fullscreen video
                 setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
@@ -85,17 +100,29 @@ public class MediaView extends AppCompatActivity {
                         hideNavBar();
                     } else {
                         ic.show(WindowInsets.Type.navigationBars());
+                        updateNavButtons();
                     }
                 }
             }
         });
 
-        String fld = getIntent().getStringExtra("folder");
-        String fl = getIntent().getStringExtra("file");
-        if (fld == null) fld = "";
-        if (fl == null) fl = "";
+        folder = getIntent().getStringExtra("folder");
+        currentFile = getIntent().getStringExtra("file");
+        fileList = getIntent().getStringArrayListExtra("fileList");
+        if (folder == null) folder = "";
+        if (currentFile == null) currentFile = "";
 
-        tStat.setText(fl);
+        // Find current index in file list
+        currentIndex = -1;
+        if (fileList != null) {
+            currentIndex = fileList.indexOf(currentFile);
+        }
+
+        tStat.setText(currentFile);
+
+        // Prev/Next button handlers
+        btnPrev.setOnClickListener(v -> navigateTo(currentIndex - 1));
+        btnNext.setOnClickListener(v -> navigateTo(currentIndex + 1));
 
         // Download progress observer
         SVCC1.getChan().IntSlots[0].observe(this, pct -> {
@@ -122,10 +149,65 @@ public class MediaView extends AppCompatActivity {
         });
 
         // Request media
+        requestMedia(currentFile);
+    }
+
+    // Navigate to another file in the list
+    private void navigateTo(int newIndex) {
+        if (fileList == null || newIndex < 0 || newIndex >= fileList.size()) return;
+
+        currentIndex = newIndex;
+        currentFile = fileList.get(currentIndex);
+        isVideo = false;
+
+        // Reset UI
+        web.stopLoading();
+        web.loadUrl("about:blank");
+        web.setVisibility(View.GONE);
+        prog.setVisibility(View.VISIBLE);
+        layoutNav.setVisibility(View.GONE);
+        tStat.setText(currentFile);
+
+        // Show system bars
+        WindowInsetsController ic = getWindow().getInsetsController();
+        if (ic != null) {
+            ic.show(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
+        }
+
+        // Request new media
+        requestMedia(currentFile);
+    }
+
+    // Request media from service
+    private void requestMedia(String fileName) {
         Bundle r = new Bundle();
-        r.putString("folder", fld);
-        r.putString("file", fl);
+        r.putString("folder", folder);
+        r.putString("file", fileName);
         SVCC1.getChan().SendToSvc("STREAM_MEDIA", r);
+    }
+
+    // Trigger prefetch for next file
+    private void triggerPrefetch() {
+        if (fileList == null || currentIndex < 0) return;
+        int nextIdx = currentIndex + 1;
+        if (nextIdx >= fileList.size()) return;
+
+        String nextFile = fileList.get(nextIdx);
+        Bundle req = new Bundle();
+        req.putString("folder", folder);
+        req.putString("file", nextFile);
+        SVCC1.getChan().SendToSvc("PREFETCH_MEDIA", req);
+    }
+
+    // Update navigation button visibility
+    private void updateNavButtons() {
+        if (fileList == null || fileList.size() <= 1 || isVideo) {
+            layoutNav.setVisibility(View.GONE);
+            return;
+        }
+        layoutNav.setVisibility(View.VISIBLE);
+        btnPrev.setEnabled(currentIndex > 0);
+        btnNext.setEnabled(currentIndex < fileList.size() - 1);
     }
 
     // Switch view type
@@ -152,6 +234,8 @@ public class MediaView extends AppCompatActivity {
                     web.loadDataWithBaseURL(null, h, "text/html", "UTF-8", null);
                     SvcMH.mediaData = null;
                     tStat.setText(name);
+                    updateNavButtons();
+                    triggerPrefetch();
                 }
                 break;
             case "text":
@@ -169,6 +253,7 @@ public class MediaView extends AppCompatActivity {
                     web.loadDataWithBaseURL(null, h, "text/html", "UTF-8", null);
                     SvcMH.mediaData = null;
                     tStat.setText(name);
+                    updateNavButtons();
                 }
                 break;
             case "video":
@@ -185,6 +270,7 @@ public class MediaView extends AppCompatActivity {
                     tStat.setText(name);
                     isVideo = true;
                     hideNavBar();
+                    layoutNav.setVisibility(View.GONE); // No navigation for video
                 }
                 break;
             case "pdf":
@@ -203,6 +289,7 @@ public class MediaView extends AppCompatActivity {
                         web.loadUrl(pUrl);
                     }
                     tStat.setText(name);
+                    layoutNav.setVisibility(View.GONE); // No navigation for PDF
                 }
                 break;
         }

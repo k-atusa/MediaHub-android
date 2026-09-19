@@ -7,7 +7,7 @@ project WHY(Web Hub Yard) MediaHub-android
 ## Usage
 
 - This is android client for MediaHub, designed for convenient UX
-- Supports quick view of files and uploading/downloading
+- Supports auto login, quick view of files, and uploading/downloading
 - Delete cache when app isn't showing recent contents.
 
 ## Build Executable

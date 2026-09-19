@@ -63,11 +63,19 @@
 
     <!-- Bottom Bar -->
     <LinearLayout style="@style/hbox" android:paddingVertical="4dp" android:paddingHorizontal="8dp">
+        <ImageButton
+            android:id="@+id/btnKeywordBottom"
+            style="@style/icon"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:src="@drawable/icon_filter"
+            android:contentDescription="Keyword Filter" />
         <TextView
             android:id="@+id/txtStatus"
             style="@style/cap"
             android:layout_width="0dp"
-            android:layout_weight="1" />
+            android:layout_weight="1"
+            android:layout_marginStart="4dp" />
         <Button
             android:id="@+id/btnDownload"
             style="@style/btnPri"

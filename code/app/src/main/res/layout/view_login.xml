@@ -47,15 +47,40 @@
                     android:singleLine="true"
                     android:layout_marginTop="8dp" />
 
-                <LinearLayout style="@style/hbox" android:layout_marginTop="16dp">
+                <!-- Status text moved here, below password -->
+                <TextView
+                    android:id="@+id/txtStatus"
+                    style="@style/cap"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center" />
+
+                <LinearLayout style="@style/hbox" android:layout_marginTop="12dp">
                     <CheckBox
                         android:id="@+id/chkTls"
                         android:layout_width="wrap_content"
-                        android:layout_height="wrap_content" />
+                        android:layout_height="wrap_content"
+                        android:minWidth="0dp"
+                        android:minHeight="0dp"
+                        android:paddingStart="4dp" />
                     <TextView style="@style/body"
-                        android:text="Ignore TLS Warning"
-                        android:textSize="14sp"
-                        android:layout_weight="1" />
+                        android:text="No TLS Check"
+                        android:textSize="13sp" />
+
+                    <View android:layout_width="16dp" android:layout_height="0dp" />
+
+                    <CheckBox
+                        android:id="@+id/chkAutoLogin"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minWidth="0dp"
+                        android:minHeight="0dp"
+                        android:paddingStart="4dp" />
+                    <TextView style="@style/body"
+                        android:text="Auto Login"
+                        android:textSize="13sp" />
+
+                    <View style="@style/spacer" />
+
                     <ImageButton
                         android:id="@+id/btnMemo"
                         android:layout_width="32dp"
@@ -68,18 +93,23 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <Button
-            android:id="@+id/btnLogin"
-            style="@style/btnPri"
-            android:text="Login"
+        <LinearLayout style="@style/hbox"
             android:layout_marginTop="24dp"
-            android:layout_width="match_parent" />
-
-        <TextView
-            android:id="@+id/txtStatus"
-            style="@style/cap"
-            android:layout_marginTop="16dp"
-            android:gravity="center" />
+            android:gravity="center">
+            <Button
+                android:id="@+id/btnLogin"
+                style="@style/btnPri"
+                android:text="Login"
+                android:layout_width="0dp"
+                android:layout_weight="1" />
+            <Button
+                android:id="@+id/btnClearCache"
+                style="@style/btnDan"
+                android:text="Clear Cache"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp" />
+        </LinearLayout>
 
     </LinearLayout>
 </ScrollView>

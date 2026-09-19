@@ -10,6 +10,7 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -17,6 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Lightweight HTTP proxy server for encrypted media streaming.
  * Runs on localhost, serves decrypted byte ranges via MHcore.DlPart.
+ * Includes an 8-entry LRU chunk cache for repeated range requests.
  */
 public class LocalStreamer {
     // io fields
@@ -26,6 +28,16 @@ public class LocalStreamer {
     private int port;
     private volatile boolean running;
     private final Map<String, StreamInfo> sessions = new ConcurrentHashMap<>();
+
+    // 8-entry LRU chunk cache for streaming (access-ordered LinkedHashMap)
+    private static final int CHUNK_CACHE_SIZE = 8;
+    private final LinkedHashMap<String, byte[]> chunkCache = new LinkedHashMap<String, byte[]>(
+            CHUNK_CACHE_SIZE + 1, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, byte[]> eldest) {
+            return size() > CHUNK_CACHE_SIZE;
+        }
+    };
 
     // streaming info
     public static class StreamInfo {
@@ -62,6 +74,10 @@ public class LocalStreamer {
         info.origSz = origSz;
         info.mime = mime;
         sessions.put(sid, info);
+        // Clear chunk cache for new session
+        synchronized (chunkCache) {
+            chunkCache.clear();
+        }
         return "http://127.0.0.1:" + port + "/" + sid;
     }
 
@@ -79,6 +95,9 @@ public class LocalStreamer {
         } catch (Exception ignored) {
         }
         sessions.clear();
+        synchronized (chunkCache) {
+            chunkCache.clear();
+        }
     }
 
     // accept client
@@ -204,7 +223,23 @@ public class LocalStreamer {
             long remaining = rangeEnd - rangeStart + 1;
             while (remaining > 0) {
                 int len = (int) Math.min(streamChunk, remaining);
-                byte[] data = core.DlPart(info.fPid, info.fId, info.fKey, info.origSz, offset, len);
+                String cacheKey = info.fPid + "/" + info.fId + "@" + offset + "-" + len;
+
+                // Check chunk cache first
+                byte[] data;
+                synchronized (chunkCache) {
+                    data = chunkCache.get(cacheKey);
+                }
+
+                if (data == null) {
+                    // Fetch and decrypt from server
+                    data = core.DlPart(info.fPid, info.fId, info.fKey, info.origSz, offset, len);
+                    // Store in LRU cache
+                    synchronized (chunkCache) {
+                        chunkCache.put(cacheKey, data);
+                    }
+                }
+
                 out.write(data);
                 offset += data.length;
                 remaining -= data.length;
