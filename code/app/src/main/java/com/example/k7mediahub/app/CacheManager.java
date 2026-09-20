@@ -7,6 +7,9 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * Disk cache for encrypted server data (userdata, folder metadata, thumbnails).
@@ -20,6 +23,7 @@ public class CacheManager {
     public CacheManager(Context ctx) {
         cacheRoot = new File(ctx.getCacheDir(), "mh_cache");
         ensureDirs();
+        trimThumbs();
     }
 
     private void ensureDirs() {
@@ -116,6 +120,29 @@ public class CacheManager {
         evictDir(new File(cacheRoot, "userdata"));
         evictDir(new File(cacheRoot, "folders"));
         evictDir(new File(cacheRoot, "thumbs"));
+    }
+
+    /**
+     * Trim thumbnail cache: if thumbs/ exceeds 4096 files,
+     * randomly delete until 2048 remain.
+     */
+    public void trimThumbs() {
+        File thumbDir = new File(cacheRoot, "thumbs");
+        if (!thumbDir.isDirectory()) return;
+        File[] files = thumbDir.listFiles();
+        if (files == null || files.length <= 4096) return;
+
+        List<File> list = new ArrayList<>(files.length);
+        for (File f : files) {
+            if (f.isFile()) list.add(f);
+        }
+        if (list.size() <= 4096) return;
+
+        Collections.shuffle(list);
+        int toDelete = list.size() - 2048;
+        for (int i = 0; i < toDelete; i++) {
+            list.get(i).delete();
+        }
     }
 
     // ===== File I/O =====

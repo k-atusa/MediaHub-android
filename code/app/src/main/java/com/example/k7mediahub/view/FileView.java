@@ -31,6 +31,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 // File list activity
 public class FileView extends AppCompatActivity {
@@ -47,6 +49,11 @@ public class FileView extends AppCompatActivity {
     // Keyword filter state
     private final List<String> availableKeywords = new ArrayList<>();
     private final Set<String> selectedKeywords = new HashSet<>();
+    // Pre-compiled patterns for token extraction (avoids recompilation per file)
+    private static final Pattern BRACKET_PATTERN = Pattern.compile("[\\[\\(]([^\\]\\)]+)[\\]\\)]");
+    private static final Pattern SPLIT_PATTERN = Pattern.compile("[._\\-\\s]+");
+    // Cached token sets per filename (built once in rebuildKeywords, reused in applyFilter)
+    private final Map<String, Set<String>> tokenCache = new HashMap<>();
 
     // Standard lifecycle
     @Override
@@ -168,8 +175,53 @@ public class FileView extends AppCompatActivity {
     }
 
     // ===== Keyword Filter =====
+    // Extract tokens from a filename (without extension).
+    // Bracket/parenthesis groups [abc def] and (abc def) are treated as single tokens.
+    // Then remaining text is split by . _ - space.
+    private static List<String> extractTokens(String nameOnly) {
+        List<String> tokens = new ArrayList<>();
+        String lower = nameOnly.toLowerCase();
+
+        // 1. Extract bracket/parenthesis groups as single tokens, remove from string
+        Matcher m = BRACKET_PATTERN.matcher(lower);
+        StringBuffer remaining = new StringBuffer();
+        while (m.find()) {
+            String group = m.group(1).trim();
+            if (!group.isEmpty()) tokens.add(group);
+            m.appendReplacement(remaining, " ");
+        }
+        m.appendTail(remaining);
+
+        // 2. Split remaining text by . _ - space
+        String[] parts = SPLIT_PATTERN.split(remaining);
+        for (String p : parts) {
+            if (!p.isEmpty()) tokens.add(p);
+        }
+        return tokens;
+    }
+
+    // Check if a token qualifies as a keyword:
+    // - Must be 4+ bytes in UTF-8 (English 1B, Korean 3B)
+    // - Must not be purely numeric
+    private static boolean isValidKeyword(String token) {
+        int byteLen = 0;
+        for (int i = 0; i < token.length(); i++) {
+            char c = token.charAt(i);
+            if (c <= 0x7F) byteLen += 1;
+            else if (c <= 0x7FF) byteLen += 2;
+            else byteLen += 3;
+        }
+        if (byteLen < 4) return false;
+        // Reject purely numeric tokens
+        for (int i = 0; i < token.length(); i++) {
+            if (!Character.isDigit(token.charAt(i))) return true;
+        }
+        return false; // all digits
+    }
+
     private void rebuildKeywords() {
         availableKeywords.clear();
+        tokenCache.clear();
         Map<String, Integer> wordCount = new HashMap<>();
 
         for (String fileName : allItems) {
@@ -178,15 +230,13 @@ public class FileView extends AppCompatActivity {
             int dotIdx = fileName.lastIndexOf('.');
             if (dotIdx > 0) nameOnly = fileName.substring(0, dotIdx);
 
-            // Split by . _ - space, lowercase
-            String[] tokens = nameOnly.toLowerCase().split("[._\\-\\s]+");
-            // Count unique tokens per file
-            Set<String> unique = new HashSet<>();
-            for (String t : tokens) {
-                if (!t.isEmpty()) unique.add(t);
-            }
+            List<String> tokens = extractTokens(nameOnly);
+            Set<String> unique = new HashSet<>(tokens);
+            tokenCache.put(fileName, unique);
             for (String t : unique) {
-                wordCount.put(t, wordCount.getOrDefault(t, 0) + 1);
+                if (isValidKeyword(t)) {
+                    wordCount.put(t, wordCount.getOrDefault(t, 0) + 1);
+                }
             }
         }
 
@@ -208,17 +258,8 @@ public class FileView extends AppCompatActivity {
             items.addAll(allItems);
         } else {
             for (String fileName : allItems) {
-                String nameOnly = fileName;
-                int dotIdx = fileName.lastIndexOf('.');
-                if (dotIdx > 0) nameOnly = fileName.substring(0, dotIdx);
-                String lower = nameOnly.toLowerCase();
-
-                // File must contain ALL selected keywords in its tokens
-                String[] tokens = lower.split("[._\\-\\s]+");
-                Set<String> tokenSet = new HashSet<>();
-                for (String t : tokens) {
-                    if (!t.isEmpty()) tokenSet.add(t);
-                }
+                Set<String> tokenSet = tokenCache.get(fileName);
+                if (tokenSet == null) continue;
 
                 boolean match = true;
                 for (String kw : selectedKeywords) {

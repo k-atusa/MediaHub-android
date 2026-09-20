@@ -28,7 +28,8 @@
 
         <activity android:name=".view.FolderView" android:exported="false" />
         <activity android:name=".view.FileView" android:exported="false" />
-        <activity android:name=".view.MediaView" android:exported="false" />
+        <activity android:name=".view.MediaView" android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize" />
 
         <service
             android:name=".app.SvcMH"
