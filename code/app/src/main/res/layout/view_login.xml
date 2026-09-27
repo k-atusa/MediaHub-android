@@ -11,16 +11,13 @@
         android:layout_marginTop="48dp"
         android:paddingBottom="64dp">
 
-        <TextView style="@style/title"
-            android:text="MediaHub"
-            android:textSize="32sp" />
+        <TextView style="@style/title" android:text="MediaHub" android:textSize="32sp"/>
 
         <com.google.android.material.card.MaterialCardView
             style="@style/card"
             android:layout_marginTop="24dp">
 
             <LinearLayout style="@style/vbox" android:padding="20dp">
-
                 <EditText
                     android:id="@+id/edtServerUrl"
                     android:layout_width="match_parent"
@@ -76,7 +73,7 @@
                         android:minHeight="0dp"
                         android:paddingStart="4dp" />
                     <TextView style="@style/body"
-                        android:text="Auto Login"
+                        android:text="Save Login"
                         android:textSize="13sp" />
 
                     <View style="@style/spacer" />

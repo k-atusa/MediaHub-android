@@ -1,4 +1,4 @@
-package com.example.k7mediahub;
+package com.example.k7mediahub.app;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
@@ -31,56 +31,71 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 import java.security.cert.X509Certificate;
 
-import com.example.k7mediahub.app.CacheManager;
+import com.example.k7mediahub.Bencode;
+import com.example.k7mediahub.Bencrypt;
+import com.example.k7mediahub.IO1;
+import com.example.k7mediahub.Opsec;
+import com.example.k7mediahub.SVCC1;
 
-// Core logic for auth, crypto, and network
+// core logic for auth, crypto, and network
 public class MHcore {
-    // Shared pepper string
+    // constants
     private static final String PEPPER = "_PROJECT_WHY_MEDIAHUB_PEPPER_2026_!@#$";
-    // Config filename
     private static final String CFG_FILE = "config.dat";
-    // Data chunk size
-    private static final int CHUNK_SZ = 1048576;
+    public static final int CHUNK_SZ = 1048576;
 
-    // connection
+    // memory clear and register as dummy
+    private static volatile Object DUMMY;
+    public static void sclear(byte[] data) {
+        if (data != null) {
+            Arrays.fill(data, (byte) 0);
+            DUMMY = data;
+        }
+    }
+    public static void ClearDummy() {
+        DUMMY = null;
+    }
+
+    // file map structure for a folder
+    public static class FileMap {
+        public String folderPID;
+        public byte[] folderKey;
+        public Map<String, byte[]> fileMap;
+
+        public FileMap(String folderPID, byte[] folderKey, Map<String, byte[]> fileMap) {
+            this.folderPID = folderPID;
+            this.folderKey = folderKey;
+            this.fileMap = fileMap;
+        }
+    }
+
+    // get file size
+    public long GetFileSize(FileMap fm, String fileName) {
+        if (!fm.fileMap.containsKey(fileName)) return -1;
+        byte[] fileInfo = unmask(fm.fileMap.get(fileName));
+        byte[] sizeBytes = Arrays.copyOfRange(fileInfo, 44, 52);
+        long sz = opsec.DecodeInt(sizeBytes);
+        sclear(fileInfo);
+        return sz;
+    }
+
+    // connection fields
     public String srvUrl;
     public String uName;
     public String uHash;
     public String uMemo = "";
     public boolean ignTLS = false;
     private byte[] uKey;
-    public Map<String, byte[]> fldMap = new HashMap<>();
+    public Map<String, byte[]> folderMap = new HashMap<>();
     private final Bencrypt.Masker masker;
     private final Bencrypt bencrypt;
     private final Opsec opsec;
 
-    // Cache manager (set externally by SvcMH)
-    public CacheManager cache;
+    // cache manager
+    public MHcache cache;
 
-    // folder structure
-    public static class FolderFiles {
-        public String fPid;
-        public byte[] fKey; // masked
-        public Map<String, byte[]> flMap; // values masked
-
-        public FolderFiles(String fPid, byte[] fKey, Map<String, byte[]> flMap) {
-            this.fPid = fPid;
-            this.fKey = fKey;
-            this.flMap = flMap;
-        }
-    }
-
-    // Init core and trust all SSL
-    public MHcore(boolean ignTLS) {
-        this.ignTLS = ignTLS;
-        this.masker = Bencrypt.Masker.GetMasker();
-        this.bencrypt = new Bencrypt();
-        this.opsec = new Opsec();
-        if (ignTLS) trustAllSsl();
-    }
-
-    // Bypass SSL validation
-    private void trustAllSsl() {
+    // bypass SSL validation if ignTLS
+    private void trustAllSSL() {
         try {
             @SuppressLint("CustomX509TrustManager") TrustManager[] trustAllCerts = new TrustManager[] {
                     new X509TrustManager() {
@@ -107,25 +122,33 @@ public class MHcore {
         } catch (Exception ignored) {}
     }
 
-    // ===== Key Masking Helpers =====
-    // Unmask master key securely
-    private byte[] getUnmaskedKey() {
+    // init core
+    public MHcore(boolean ignTLS) {
+        this.ignTLS = ignTLS;
+        this.masker = Bencrypt.Masker.GetMasker();
+        this.bencrypt = new Bencrypt();
+        this.opsec = new Opsec();
+        if (ignTLS) trustAllSSL();
+    }
+
+    // unmask master key
+    private byte[] getPlainUkey() {
         return masker.XOR(uKey);
     }
 
-    // Unmask a masked byte array, caller must zero the result after use
+    // unmask byte array
     private byte[] unmask(byte[] masked) {
         return masker.XOR(masked);
     }
 
-    // Mask all byte[] values in a map (in-place)
+    // mask map values
     private void maskMapValues(Map<String, byte[]> map) {
         for (Map.Entry<String, byte[]> e : map.entrySet()) {
             e.setValue(masker.XOR(e.getValue()));
         }
     }
 
-    // Create a copy of a map with all byte[] values unmasked (caller must zero values after use)
+    // unmask map and return copy
     private Map<String, byte[]> unmaskMapCopy(Map<String, byte[]> maskedMap) {
         Map<String, byte[]> result = new HashMap<>();
         for (Map.Entry<String, byte[]> e : maskedMap.entrySet()) {
@@ -134,25 +157,32 @@ public class MHcore {
         return result;
     }
 
-    // Zero all byte[] values in a map
+    // zerorize map values
     private static void zeroMap(Map<String, byte[]> map) {
-        for (byte[] v : map.values()) {
-            Arrays.fill(v, (byte) 0);
-        }
+        for (byte[] v : map.values()) sclear(v);
     }
 
-    // Generate dedicated IV slice with incremental block counter offset
+    // generate iv with counter
     private byte[] mkIv(byte[] gIv, long c) {
         byte[] iv = Arrays.copyOf(gIv, gIv.length);
         ByteBuffer b = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN);
         b.putLong(c);
         byte[] ctr = b.array();
-        for (int i = 0; i < 8; i++)
-            iv[4 + i] ^= ctr[i];
+        for (int i = 0; i < 8; i++) iv[4 + i] ^= ctr[i];
         return iv;
     }
 
-    // Pull specific remote byte array range chunks over HTTP
+    // read all bytes from stream
+    private static byte[] readAll(InputStream in) throws Exception {
+        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        byte[] b = new byte[8192];
+        int r;
+        while ((r = in.read(b)) != -1) buf.write(b, 0, r);
+        in.close();
+        return buf.toByteArray();
+    }
+
+    // fetch network bytes
     private byte[] fetchNet(URL u, long start, long end) throws Exception {
         HttpURLConnection c = (HttpURLConnection) u.openConnection();
         c.setRequestProperty("Range", "bytes=" + start + "-" + end);
@@ -160,23 +190,21 @@ public class MHcore {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         byte[] buf = new byte[8192];
         int r;
-        while ((r = in.read(buf)) != -1)
-            out.write(buf, 0, r);
+        while ((r = in.read(buf)) != -1) out.write(buf, 0, r);
         in.close();
         c.disconnect();
         return out.toByteArray();
     }
 
-    // Generate scaled or center-cropped thumbnail byte array from bitmap
+    // make thumbnail bitmap
     private byte[] mkThumb(Bitmap img) {
-        if (img == null)
-            return null;
+        if (img == null) return null;
         int w = img.getWidth();
         int h = img.getHeight();
         double r = (double) w / h;
         Bitmap out;
 
-        if (r >= 0.6666 && r <= 1.5) { // normal ratio
+        if (r >= 0.6666 && r <= 1.5) { // rectangular thumb
             int nw, nh;
             if (w >= h) {
                 nw = 256;
@@ -194,14 +222,14 @@ public class MHcore {
             if (cropped != img) cropped.recycle();
         }
 
-        // JPEG 70%
+        // make with JPEG 70%
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         out.compress(Bitmap.CompressFormat.JPEG, 70, baos);
         if (out != img) out.recycle();
         return baos.toByteArray();
     }
 
-    // Extract thumbnail from local image path
+    // extract image thumbnail
     private byte[] imgThumb(String path) {
         Bitmap img = BitmapFactory.decodeFile(path);
         byte[] res = mkThumb(img);
@@ -209,17 +237,15 @@ public class MHcore {
         return res;
     }
 
-    // Extract video frame thumbnail from local video path
+    // extract video thumbnail
     private byte[] vidThumb(String path) {
         MediaMetadataRetriever retriever = new MediaMetadataRetriever();
         try {
             retriever.setDataSource(path);
             Bitmap frame = retriever.getFrameAtTime(1000000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
-            if (frame == null)
-                frame = retriever.getFrameAtTime();
+            if (frame == null) frame = retriever.getFrameAtTime();
             byte[] res = mkThumb(frame);
-            if (frame != null)
-                frame.recycle();
+            if (frame != null) frame.recycle();
             return res;
         } catch (Exception e) {
             return null;
@@ -231,46 +257,28 @@ public class MHcore {
         }
     }
 
-    // Convert key chunk to object PID string
-    public String ObjPid(byte[] key) {
+    // convert key to PID
+    public String GetPID(byte[] key) {
         StringBuilder sb = new StringBuilder();
-        for (int i = 32; i < 44; i++)
-            sb.append(String.format("%02x", key[i]));
+        for (int i = 32; i < 44; i++) sb.append(String.format("%02x", key[i]));
         return sb.toString();
     }
 
-    // Load local client settings from file (url, username, ignTLS, memo)
+    // load config data (serverUrl, userName, noTLS, memo)
     public void LoadCfg(Context ctx) throws Exception {
         File f = new File(ctx.getFilesDir(), CFG_FILE);
-        if (!f.exists())
-            return;
-        FileInputStream in = new FileInputStream(f);
-        ByteArrayOutputStream buf = new ByteArrayOutputStream();
-        byte[] b = new byte[1024];
-        int r;
-        while ((r = in.read(b)) != -1)
-            buf.write(b, 0, r);
-        in.close();
-        String[] pts = buf.toString("UTF-8").split("\n", 4);
-        if (pts.length >= 2) {
+        if (!f.exists()) return;
+        byte[] bytes = readAll(new FileInputStream(f));
+        String[] pts = new String(bytes, StandardCharsets.UTF_8).split("\n", 4);
+        if (pts.length >= 4) {
             this.srvUrl = pts[0];
             this.uName = pts[1];
-            if (pts.length >= 3) {
-                if ("1".equals(pts[2])) {
-                    this.ignTLS = true;
-                    if (pts.length == 4) this.uMemo = pts[3];
-                } else if ("0".equals(pts[2])) {
-                    this.ignTLS = false;
-                    if (pts.length == 4) this.uMemo = pts[3];
-                } else {
-                    // Legacy format compatibility (pts[2] was uMemo)
-                    this.uMemo = pts[2];
-                }
-            }
+            this.ignTLS = "1".equals(pts[2]);
+            this.uMemo = pts[3];
         }
     }
 
-    // Save local client settings to file
+    // save config data
     public void SaveCfg(Context ctx, String url, String name, boolean ignTLS, String memo) throws Exception {
         this.srvUrl = url;
         this.uName = name;
@@ -283,11 +291,20 @@ public class MHcore {
         out.close();
     }
 
-    public void SaveCfg(Context ctx, String url, String name, String memo) throws Exception {
-        SaveCfg(ctx, url, name, this.ignTLS, memo);
+    // check account
+    public boolean CheckAcc() throws Exception {
+        if (uHash == null) return false;
+        if (cache != null && cache.GetFileCache("userdata", uHash) != null) return true;
+
+        URL u = new URL(srvUrl + "/api/userdata/" + uHash);
+        HttpURLConnection c = (HttpURLConnection) u.openConnection();
+        c.setRequestMethod("GET");
+        int res = c.getResponseCode();
+        c.disconnect();
+        return res == 200;
     }
 
-    // Derive keys and set user hash
+    // login and derive keys (uHash, uKey)
     public void Login(String name, String pw) throws Exception {
         this.uName = name;
         byte[] p = Bencode.NormPW(pw);
@@ -297,90 +314,57 @@ public class MHcore {
 
         byte[] hash = Bencrypt.SHA3256(keys[0]);
         StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < 16; i++)
-            sb.append(String.format("%02x", hash[i]));
+        for (int i = 0; i < 16; i++) sb.append(String.format("%02x", hash[i]));
         this.uHash = sb.toString();
         this.uKey = masker.XOR(keys[1]);
 
-        Arrays.fill(p, (byte) 0);
-        Arrays.fill(keys[0], (byte) 0);
-        Arrays.fill(keys[1], (byte) 0);
+        sclear(p);
+        sclear(keys[0]);
+        sclear(keys[1]);
     }
 
-    // ===== Auto Login Key Serialization =====
-    // Export session credentials for auto-login storage: only uHash + unmasked raw uKey
-    // Returns: uHash(hex, 32 chars) + "|" + Base64(rawUKey)
-    public byte[] exportAutoLoginData() {
+    // export auto login data (uHash + uKey)
+    public byte[] ExportAutoLogin() {
         if (uHash == null || uKey == null) return null;
-        byte[] rawKey = getUnmaskedKey();
+        byte[] rawKey = getPlainUkey();
         if (rawKey == null) return null;
         String b64Key = java.util.Base64.getEncoder().encodeToString(rawKey);
-        Arrays.fill(rawKey, (byte) 0);
-        String data = uHash + "|" + b64Key;
+        sclear(rawKey);
+        String data = uHash + "\n" + b64Key;
         return data.getBytes(StandardCharsets.UTF_8);
     }
 
-    // Restore session from auto-login data (skips Argon2 KDF)
-    public boolean restoreAutoLogin(byte[] data, String url, String name, boolean ignTLS) throws Exception {
+    // load auto login (uHash + uKey)
+    public boolean LoadAutoLogin(byte[] data, String url, String name, boolean ignTLS) throws Exception {
         String str = new String(data, StandardCharsets.UTF_8);
-        String[] parts = str.split("\\|", 4);
-        byte[] rawKey;
-        if (parts.length == 2) {
-            // New format: uHash + "|" + b64Key (raw key)
-            this.uHash = parts[0];
-            rawKey = java.util.Base64.getDecoder().decode(parts[1]);
-        } else if (parts.length == 4) {
-            // Legacy format: uHash + "|" + srvUrl + "|" + uName + "|" + b64Key
-            this.uHash = parts[0];
-            rawKey = java.util.Base64.getDecoder().decode(parts[3]);
-        } else {
-            return false;
-        }
-
-        // Mask the raw key with the current process's Masker instance
+        String[] parts = str.split("\n", 2);
+        if (parts.length < 2) return false;
+        this.uHash = parts[0];
+        byte[] rawKey = java.util.Base64.getDecoder().decode(parts[1]);
         this.uKey = masker.XOR(rawKey);
-        Arrays.fill(rawKey, (byte) 0);
+        sclear(rawKey);
 
-        this.srvUrl = (url != null && !url.isEmpty()) ? url : (parts.length == 4 ? parts[1] : "");
-        this.uName = (name != null && !name.isEmpty()) ? name : (parts.length == 4 ? parts[2] : "");
         this.ignTLS = ignTLS;
-
-        if (ignTLS) trustAllSsl();
+        if (ignTLS) trustAllSSL();
         return true;
     }
 
-    // Check account existence
-    public boolean CheckAcc() throws Exception {
-        URL u = new URL(srvUrl + "/api/userdata/" + uHash);
-        HttpURLConnection c = (HttpURLConnection) u.openConnection();
-        c.setRequestMethod("GET");
-        int res = c.getResponseCode();
-        c.disconnect();
-        return res == 200;
-    }
-
-    // Fetch and sync folder map from remote server
-    public Map<String, byte[]> GetFlds() throws Exception {
-        // download folder map
+    // get folder map
+    public Map<String, byte[]> GetFolderMap() throws Exception {
         if (uHash == null) throw new IllegalStateException("Not authenticated");
         URL u = new URL(srvUrl + "/api/userdata/" + uHash);
 
-        // Try cache first, fetch if missing
+        // download data
         byte[] content = null;
         if (cache != null) {
-            content = cache.getCachedOrFetch("userdata", uHash, () -> {
+            content = cache.GetOrFetchFileCache("userdata", uHash, () -> {
                 HttpURLConnection conn = (HttpURLConnection) u.openConnection();
                 conn.setRequestMethod("GET");
                 int code = conn.getResponseCode();
                 if (code == 200) {
-                    InputStream in = conn.getInputStream();
-                    ByteArrayOutputStream buf = new ByteArrayOutputStream();
-                    byte[] b = new byte[8192];
-                    int r;
-                    while ((r = in.read(b)) != -1) buf.write(b, 0, r);
-                    in.close();
+                    byte[] data = readAll(conn.getInputStream());
                     conn.disconnect();
-                    return buf.toByteArray();
+                    return data;
                 } else if (code == 404) {
                     conn.disconnect();
                     return new byte[0];
@@ -394,13 +378,7 @@ public class MHcore {
             c.setRequestMethod("GET");
             int resCode = c.getResponseCode();
             if (resCode == 200) {
-                InputStream in = c.getInputStream();
-                ByteArrayOutputStream buf = new ByteArrayOutputStream();
-                byte[] b = new byte[8192];
-                int r;
-                while ((r = in.read(b)) != -1) buf.write(b, 0, r);
-                in.close();
-                content = buf.toByteArray();
+                content = readAll(c.getInputStream());
             } else if (resCode == 404) {
                 content = new byte[0];
             } else {
@@ -412,40 +390,33 @@ public class MHcore {
 
         // decrypt and unpack
         if (content != null && content.length > 0) {
-            byte[] rawUK = getUnmaskedKey();
+            byte[] rawUK = getPlainUkey();
             byte[] keySlice = Arrays.copyOfRange(rawUK, 0, 32);
             Bencrypt.SymMaster sm = new Bencrypt.SymMaster("gcm1", keySlice);
-            this.fldMap = opsec.DecodeCfg(sm.DeBin(content));
-            Arrays.fill(rawUK, (byte) 0);
-            Arrays.fill(keySlice, (byte) 0);
-            // Mask all folder key values at rest
-            maskMapValues(this.fldMap);
+            this.folderMap = opsec.DecodeCfg(sm.DeBin(content));
+            sclear(rawUK);
+            sclear(keySlice);
+            maskMapValues(this.folderMap);
         } else {
-            this.fldMap = new HashMap<>();
+            this.folderMap = new HashMap<>();
         }
-
-        return this.fldMap;
+        return this.folderMap;
     }
 
-    // Create a new folder storage container on server
-    public void MkFld(String name) throws Exception {
-        // Check with unmasked keys
-        if (this.fldMap.containsKey(name)) throw new IllegalArgumentException("Folder name already exists!");
-        byte[] folderKey = new byte[44];
-        System.arraycopy(bencrypt.Random(32), 0, folderKey, 0, 32);
-        System.arraycopy(bencrypt.Random(12), 0, folderKey, 32, 12);
-        // Store masked
-        this.fldMap.put(name, masker.XOR(folderKey));
+    // make new folder
+    public void MkFolder(String name) throws Exception {
+        if (this.folderMap.containsKey(name)) throw new IllegalArgumentException("Folder name already exists!");
+        byte[] folderKey = bencrypt.Random(44);
+        this.folderMap.put(name, masker.XOR(folderKey));
 
-        // Unmask all values for encoding, then zero
-        Map<String, byte[]> plainMap = unmaskMapCopy(this.fldMap);
-
-        byte[] rawUK = getUnmaskedKey();
+        // encrypt updated folder map
+        Map<String, byte[]> plainMap = unmaskMapCopy(this.folderMap);
+        byte[] rawUK = getPlainUkey();
         byte[] keySlice = Arrays.copyOfRange(rawUK, 0, 32);
         Bencrypt.SymMaster sm = new Bencrypt.SymMaster("gcm1", keySlice);
         byte[] enc = sm.EnBin(opsec.EncodeCfg(plainMap));
-        Arrays.fill(rawUK, (byte) 0);
-        Arrays.fill(keySlice, (byte) 0);
+        sclear(rawUK);
+        sclear(keySlice);
         zeroMap(plainMap);
 
         // upload folder map
@@ -458,91 +429,69 @@ public class MHcore {
         out.write(enc);
         out.close();
 
-        if (c.getResponseCode() != 200) {
-            throw new RuntimeException("Failed to create folder: code " + c.getResponseCode());
-        }
+        // update cache
+        if (c.getResponseCode() != 200) throw new RuntimeException("Failed to create folder: code " + c.getResponseCode());
         c.disconnect();
-
-        // Invalidate userdata cache
-        if (cache != null) cache.put("userdata", uHash, enc);
+        if (cache != null) cache.PutFileCache("userdata", uHash, enc);
     }
 
-    // Fetch and decrypt file mapping for specific folder
-    public FolderFiles GetFiles(String name) throws Exception {
-        if (!this.fldMap.containsKey(name)) throw new IllegalArgumentException("Folder not found");
-        // Unmask folder key for use
-        byte[] fKey = unmask(this.fldMap.get(name));
-        String fPid = ObjPid(fKey);
+    // get file map
+    public FileMap GetFileMap(String name) throws Exception {
+        if (!this.folderMap.containsKey(name)) throw new IllegalArgumentException("Folder not found");
+        byte[] folderKey = unmask(this.folderMap.get(name));
+        String folderPID = GetPID(folderKey);
 
+        // download data
         byte[] content = null;
-        String cacheKey = fPid + "/names";
-
-        // Try cache first
+        String cacheKey = folderPID + "/names";
         if (cache != null) {
-            URL fUrl = new URL(srvUrl + "/api/storage/" + fPid + "/names");
-            content = cache.getCachedOrFetch("folders", cacheKey, () -> {
+            URL fUrl = new URL(srvUrl + "/api/storage/" + folderPID + "/names");
+            content = cache.GetOrFetchFileCache("folders", cacheKey, () -> {
                 HttpURLConnection conn = (HttpURLConnection) fUrl.openConnection();
                 conn.setRequestMethod("GET");
                 int code = conn.getResponseCode();
                 if (code == 200) {
-                    InputStream in = conn.getInputStream();
-                    ByteArrayOutputStream buf = new ByteArrayOutputStream();
-                    byte[] b = new byte[8192];
-                    int r;
-                    while ((r = in.read(b)) != -1) buf.write(b, 0, r);
-                    in.close();
+                    byte[] data = readAll(conn.getInputStream());
                     conn.disconnect();
-                    return buf.toByteArray();
+                    return data;
                 }
                 conn.disconnect();
                 return new byte[0];
             });
         } else {
-            URL u = new URL(srvUrl + "/api/storage/" + fPid + "/names");
+            URL u = new URL(srvUrl + "/api/storage/" + folderPID + "/names");
             HttpURLConnection c = (HttpURLConnection) u.openConnection();
             c.setRequestMethod("GET");
             int resCode = c.getResponseCode();
             if (resCode == 200) {
-                InputStream in = c.getInputStream();
-                ByteArrayOutputStream buf = new ByteArrayOutputStream();
-                byte[] b = new byte[8192];
-                int r;
-                while ((r = in.read(b)) != -1) buf.write(b, 0, r);
-                in.close();
-                content = buf.toByteArray();
+                content = readAll(c.getInputStream());
             }
             c.disconnect();
         }
 
-        Map<String, byte[]> flMap = new HashMap<>();
+        // decrypt and unpack
+        Map<String, byte[]> fileMap = new HashMap<>();
         if (content != null && content.length > 0) {
-            byte[] keySlice = Arrays.copyOfRange(fKey, 0, 32);
+            byte[] keySlice = Arrays.copyOfRange(folderKey, 0, 32);
             Bencrypt.SymMaster sm = new Bencrypt.SymMaster("gcm1", keySlice);
-            flMap = opsec.DecodeCfg(sm.DeBin(content));
-            Arrays.fill(keySlice, (byte) 0);
-            // Mask all file info values at rest
-            maskMapValues(flMap);
+            fileMap = opsec.DecodeCfg(sm.DeBin(content));
+            sclear(keySlice);
+            maskMapValues(fileMap);
         }
-
-        // Store fKey as masked, zero plain copy
-        byte[] maskedFKey = masker.XOR(fKey);
-        Arrays.fill(fKey, (byte) 0);
-        return new FolderFiles(fPid, maskedFKey, flMap);
+        byte[] maskedFolderKey = masker.XOR(folderKey);
+        sclear(folderKey);
+        return new FileMap(folderPID, maskedFolderKey, fileMap);
     }
 
-    // Encrypt, pad, and upload media file along with thumbnail to server
-    public boolean UpFile(Context ctx, FolderFiles ff, File file) throws Exception {
-        // get info and make new file key
+    // upload file
+    public boolean UpFile(Context ctx, FileMap fm, File file) throws Exception {
         String name = file.getName();
         long origSz = file.length();
         String path = file.getAbsolutePath();
+        byte[] fileKey = bencrypt.Random(44);
+        String filePID = GetPID(fileKey);
 
-        byte[] fk = new byte[44];
-        System.arraycopy(bencrypt.Random(32), 0, fk, 0, 32);
-        System.arraycopy(bencrypt.Random(12), 0, fk, 32, 12);
-        String fpid = ObjPid(fk);
-
-        // get thumbnail
+        // process thumbnail
         String ext = "";
         int idx = name.lastIndexOf('.');
         if (idx > 0)
@@ -556,10 +505,10 @@ public class MHcore {
 
         // upload thumbnail
         if (thumb != null) {
-            byte[] fkSlice = Arrays.copyOfRange(fk, 0, 32);
+            byte[] fkSlice = Arrays.copyOfRange(fileKey, 0, 32);
             Bencrypt.SymMaster tSm = new Bencrypt.SymMaster("gcm1", fkSlice);
             byte[] encThumb = tSm.EnBin(thumb);
-            URL tUrl = new URL(srvUrl + "/api/media/" + ff.fPid + "/" + fpid + "/thumb");
+            URL tUrl = new URL(srvUrl + "/api/media/" + fm.folderPID + "/" + filePID + "/thumb");
             HttpURLConnection tc = (HttpURLConnection) tUrl.openConnection();
             tc.setRequestMethod("POST");
             tc.setRequestProperty("X-User-Hash", uHash);
@@ -572,10 +521,10 @@ public class MHcore {
             tc.disconnect();
         }
 
-        // encrypt to temp file
-        File tFile = new File(ctx.getCacheDir(), "up_" + fpid + ".dat");
+        // encrypt temp file
+        File tFile = new File(ctx.getCacheDir(), "up_" + filePID + ".temp");
         FileOutputStream tOut = new FileOutputStream(tFile);
-        byte[] fkSlice = Arrays.copyOfRange(fk, 0, 32);
+        byte[] fkSlice = Arrays.copyOfRange(fileKey, 0, 32);
         Bencrypt.SymMaster smx = new Bencrypt.SymMaster("gcmx1", fkSlice);
         FileInputStream fis = new FileInputStream(file);
         smx.EnFile(fis, origSz, tOut);
@@ -588,8 +537,8 @@ public class MHcore {
         if (Opsec.PadLen(encSz) > 0) Opsec.PadFile(tOut, padSz);
         tOut.close();
 
-        // upload file
-        URL u = new URL(srvUrl + "/api/media/" + ff.fPid + "/" + fpid + "/dat");
+        // upload data
+        URL u = new URL(srvUrl + "/api/media/" + fm.folderPID + "/" + filePID + "/dat");
         HttpURLConnection c = (HttpURLConnection) u.openConnection();
         c.setRequestMethod("POST");
         c.setRequestProperty("X-User-Hash", uHash);
@@ -598,7 +547,6 @@ public class MHcore {
         c.setFixedLengthStreamingMode(tLen);
         c.setDoOutput(true);
 
-        // Upload stream
         FileInputStream tIn = new FileInputStream(tFile);
         OutputStream out = c.getOutputStream();
         byte[] buf = new byte[65536];
@@ -616,28 +564,27 @@ public class MHcore {
         if (c.getResponseCode() != 200) throw new RuntimeException("Upload failed: code " + c.getResponseCode());
         c.disconnect();
 
-        // encode original size
+        // encode info to folder map
         byte[] sizeBuf = opsec.EncodeInt(origSz, 8);
-        byte[] flInfo = new byte[52];
-        System.arraycopy(fk, 0, flInfo, 0, 44);
-        System.arraycopy(sizeBuf, 0, flInfo, 44, 8);
-        // Store masked
-        ff.flMap.put(name, masker.XOR(flInfo));
+        byte[] fileInfo = new byte[52];
+        System.arraycopy(fileKey, 0, fileInfo, 0, 44);
+        System.arraycopy(sizeBuf, 0, fileInfo, 44, 8);
+        fm.fileMap.put(name, masker.XOR(fileInfo));
 
-        // Unmask folder key and file map for encoding
-        byte[] plainFKey = unmask(ff.fKey);
-        Map<String, byte[]> plainFlMap = unmaskMapCopy(ff.flMap);
+        byte[] plainFolderKey = unmask(fm.folderKey);
+        Map<String, byte[]> plainFlMap = unmaskMapCopy(fm.fileMap);
 
-        byte[] fKeySlice = Arrays.copyOfRange(plainFKey, 0, 32);
+        byte[] fKeySlice = Arrays.copyOfRange(plainFolderKey, 0, 32);
         Bencrypt.SymMaster sm = new Bencrypt.SymMaster("gcm1", fKeySlice);
         byte[] encMap = sm.EnBin(opsec.EncodeCfg(plainFlMap));
-        Arrays.fill(fKeySlice, (byte) 0);
-        Arrays.fill(fkSlice, (byte) 0);
-        Arrays.fill(plainFKey, (byte) 0);
+        sclear(fileKey);
+        sclear(fKeySlice);
+        sclear(fkSlice);
+        sclear(plainFolderKey);
         zeroMap(plainFlMap);
 
-        // upload file map
-        URL uMap = new URL(srvUrl + "/api/storage/" + ff.fPid + "/names");
+        // upload metadata
+        URL uMap = new URL(srvUrl + "/api/storage/" + fm.folderPID + "/names");
         HttpURLConnection cMap = (HttpURLConnection) uMap.openConnection();
         cMap.setRequestMethod("POST");
         cMap.setRequestProperty("X-User-Hash", uHash);
@@ -647,44 +594,41 @@ public class MHcore {
         outMap.write(encMap);
         outMap.close();
 
+        // update cache
         if (cMap.getResponseCode() != 200) throw new RuntimeException("Failed to sync metadata: code " + cMap.getResponseCode());
         cMap.disconnect();
-
-        // Update folder cache
-        if (cache != null) cache.put("folders", ff.fPid + "/names", encMap);
+        if (cache != null) cache.PutFileCache("folders", fm.folderPID + "/names", encMap);
         return true;
     }
 
-    // Download media file to Download folder
-    public String DnFile(Context ctx, FolderFiles ff, String fileName) throws Exception {
-        // check validity, get file key (unmask)
-        if (!ff.flMap.containsKey(fileName)) throw new IllegalArgumentException("File not found in metadata");
-        byte[] flInfo = unmask(ff.flMap.get(fileName));
-
-        byte[] fk = Arrays.copyOfRange(flInfo, 0, 44);
-        byte[] sizeBytes = Arrays.copyOfRange(flInfo, 44, 52);
+    // download file
+    public String DnFile(Context ctx, FileMap fm, String fileName) throws Exception {
+        if (!fm.fileMap.containsKey(fileName)) throw new IllegalArgumentException("File not found in metadata");
+        byte[] fileInfo = unmask(fm.fileMap.get(fileName));
+        byte[] fileKey = Arrays.copyOfRange(fileInfo, 0, 44);
+        byte[] sizeBytes = Arrays.copyOfRange(fileInfo, 44, 52);
         long origSz = opsec.DecodeInt(sizeBytes);
-        String fpid = ObjPid(fk);
-        Arrays.fill(flInfo, (byte) 0);
+        String filePID = GetPID(fileKey);
+        sclear(fileInfo);
 
-        byte[] fkSlice = Arrays.copyOfRange(fk, 0, 32);
+        // ready to decrypt
+        byte[] fkSlice = Arrays.copyOfRange(fileKey, 0, 32);
         Bencrypt.SymMaster smx = new Bencrypt.SymMaster("gcmx1", fkSlice);
         long ciphSz = smx.AfterSize(origSz);
 
-        // download file
-        URL u = new URL(srvUrl + "/api/media/" + ff.fPid + "/" + fpid + "/dat");
+        // download data
+        URL u = new URL(srvUrl + "/api/media/" + fm.folderPID + "/" + filePID + "/dat");
         HttpURLConnection c = (HttpURLConnection) u.openConnection();
         c.setRequestMethod("GET");
         int resCode = c.getResponseCode();
 
-        // download and decrypt
         if (resCode == 200 || resCode == 206) {
             IO1.VFile destFile = IO1.CreateDownloadsFile(ctx, fileName);
             if (destFile == null) throw new RuntimeException("Failed to create download file");
             OutputStream fos = destFile.OpenWriter(ctx, false);
             InputStream in = c.getInputStream();
-            
-            // Decrypt stream with progress
+
+            // download all
             new Thread(() -> {
                 while (smx.Processed() < ciphSz) {
                     SVCC1.getChan().SetInt(0, (int) (smx.Processed() * 100 / ciphSz));
@@ -697,53 +641,53 @@ public class MHcore {
             in.close();
             fos.close();
             c.disconnect();
-            Arrays.fill(fkSlice, (byte) 0);
+            sclear(fkSlice);
             return destFile.GetUri().toString();
         } else {
             c.disconnect();
-            Arrays.fill(fkSlice, (byte) 0);
+            sclear(fkSlice);
             throw new RuntimeException("Download failed: " + resCode);
         }
     }
 
-    // Progress callback for download operations
-    public interface ProgressListener {
+    // progress listener
+    public interface ProgListener {
         void onProgress(int percent);
     }
 
-    // Download and decrypt entire file or thumbnail directly into memory
-    public byte[] DnMem(FolderFiles ff, String fileName, boolean isThumbnail) throws Exception {
-        return DnMem(ff, fileName, isThumbnail, null);
+    // download file to memory
+    public byte[] DnMem(FileMap fm, String fileName, boolean isThumbnail) throws Exception {
+        return DnMem(fm, fileName, isThumbnail, null);
     }
 
-    // Download and decrypt with progress reporting
-    public byte[] DnMem(FolderFiles ff, String fileName, boolean isThumbnail, ProgressListener listener) throws Exception {
-        // check validity, get file key (unmask)
-        if (!ff.flMap.containsKey(fileName)) throw new IllegalArgumentException("File not found in metadata");
-        byte[] flInfo = unmask(ff.flMap.get(fileName));
+    // download file to memory with progress
+    public byte[] DnMem(FileMap fm, String fileName, boolean isThumbnail, ProgListener listener) throws Exception {
+        if (!fm.fileMap.containsKey(fileName)) throw new IllegalArgumentException("File not found in metadata");
+        byte[] fileInfo = unmask(fm.fileMap.get(fileName));
 
-        byte[] fk = Arrays.copyOfRange(flInfo, 0, 44);
-        byte[] sizeBytes = Arrays.copyOfRange(flInfo, 44, 52);
+        // prepare keys
+        byte[] fileKey = Arrays.copyOfRange(fileInfo, 0, 44);
+        byte[] sizeBytes = Arrays.copyOfRange(fileInfo, 44, 52);
         long origSz = opsec.DecodeInt(sizeBytes);
-        String fpid = ObjPid(fk);
-        Arrays.fill(flInfo, (byte) 0);
-
-        // check if thumbnail
+        String filePID = GetPID(fileKey);
+        sclear(fileInfo);
         String typ = isThumbnail ? "thumb" : "dat";
-        String cacheKeyThumb = ff.fPid + "/" + fpid + "/" + typ;
+        String cacheKeyThumb = fm.folderPID + "/" + filePID + "/" + typ;
 
-        // Try cache for thumbnails (encrypted bytes)
+        // get thumbnail data from cache
         byte[] downloaded = null;
         if (isThumbnail && cache != null) {
-            downloaded = cache.get("thumbs", cacheKeyThumb);
+            downloaded = cache.GetFileCache("thumbs", cacheKeyThumb);
         }
 
+        // download data
         if (downloaded == null) {
-            URL u = new URL(srvUrl + "/api/media/" + ff.fPid + "/" + fpid + "/" + typ);
+            URL u = new URL(srvUrl + "/api/media/" + fm.folderPID + "/" + filePID + "/" + typ);
             HttpURLConnection c = (HttpURLConnection) u.openConnection();
             c.setRequestMethod("GET");
             int resCode = c.getResponseCode();
 
+            // download all
             if (resCode == 200 || resCode == 206) {
                 long total = c.getContentLengthLong();
                 InputStream in = c.getInputStream();
@@ -763,22 +707,19 @@ public class MHcore {
                         }
                     }
                 }
+
                 in.close();
                 c.disconnect();
                 downloaded = bos.toByteArray();
-
-                // Cache thumbnail encrypted bytes
-                if (isThumbnail && cache != null && downloaded.length > 0) {
-                    cache.put("thumbs", cacheKeyThumb, downloaded);
-                }
+                if (isThumbnail && cache != null && downloaded.length > 0) cache.PutFileCache("thumbs", cacheKeyThumb, downloaded);
             } else {
                 c.disconnect();
                 throw new RuntimeException("Download failed: " + resCode);
             }
         }
 
-        // decrypt in-memory
-        byte[] fkSlice = Arrays.copyOfRange(fk, 0, 32);
+        // decrypt in memory
+        byte[] fkSlice = Arrays.copyOfRange(fileKey, 0, 32);
         byte[] plainData;
         if (isThumbnail) {
             Bencrypt.SymMaster sm = new Bencrypt.SymMaster("gcm1", fkSlice);
@@ -789,57 +730,68 @@ public class MHcore {
             byte[] pureEncBytes = Arrays.copyOfRange(downloaded, 0, (int) ciphSz);
             plainData = smx.DeBin(pureEncBytes);
         }
-        Arrays.fill(fkSlice, (byte) 0);
+        sclear(fileKey);
+        sclear(fkSlice);
         return plainData;
     }
 
-    // Get original file size from masked flMap entry
-    public long GetFileSize(FolderFiles ff, String fileName) {
-        if (!ff.flMap.containsKey(fileName)) return -1;
-        byte[] flInfo = unmask(ff.flMap.get(fileName));
-        byte[] sizeBytes = Arrays.copyOfRange(flInfo, 44, 52);
-        long sz = opsec.DecodeInt(sizeBytes);
-        Arrays.fill(flInfo, (byte) 0);
-        return sz;
+    // streaming metadata
+    public static class StreamMeta {
+        public byte[] fKey;
+        public String fId;
+        public long origSz;
     }
 
-    // Partial decrypt for streaming
-    public byte[] DlPart(String fld, String fId, byte[] fKey, long origSz, long ptStart, int ptLen) throws Exception {
-        URL u = new URL(srvUrl + "/api/media/" + fld + "/" + fId + "/dat");
-        byte[] gIv = fetchNet(u, 0, 11);
-        if (gIv.length < 12) return new byte[0];
+    // get stream metadata
+    public StreamMeta GetStreamMeta(FileMap fm, String fileName) {
+        if (!fm.fileMap.containsKey(fileName)) return null;
+        byte[] fileInfo = unmask(fm.fileMap.get(fileName));
+        StreamMeta meta = new StreamMeta();
+        meta.fKey = Arrays.copyOfRange(fileInfo, 0, 44);
+        meta.fId = GetPID(meta.fKey);
+        byte[] sizeBytes = Arrays.copyOfRange(fileInfo, 44, 52);
+        meta.origSz = opsec.DecodeInt(sizeBytes);
+        sclear(fileInfo);
+        return meta;
+    }
 
-        // calculate offset
+    // fetch global IV of file
+    public byte[] FetchGIv(String fld, String fId) throws Exception {
+        URL u = new URL(srvUrl + "/api/media/" + fld + "/" + fId + "/dat");
+        return fetchNet(u, 0, 11);
+    }
+
+    // download single chunk of file
+    public byte[] DlChunk(String fld, String fId, byte[] fKey, long origSz, byte[] gIv, long chunkIdx) throws Exception {
+        return DlChunk(fld, fId, fKey, origSz, gIv, chunkIdx, null);
+    }
+
+    // download single chunk of file with runner
+    public byte[] DlChunk(String fld, String fId, byte[] fKey, long origSz, byte[] gIv, long chunkIdx, Runnable onDecrypting) throws Exception {
+        URL u = new URL(srvUrl + "/api/media/" + fld + "/" + fId + "/dat");
+
+        // calculate position
         Bencrypt.SymMaster smx = new Bencrypt.SymMaster("gcmx1", Arrays.copyOfRange(fKey, 0, 32));
         long totCiph = smx.AfterSize(origSz);
-        long sChunk = ptStart / CHUNK_SZ;
-        long eChunk = (ptStart + ptLen - 1) / CHUNK_SZ;
-        long reqStart = 12 + (sChunk * (CHUNK_SZ + 16));
-        long reqEnd = 12 + ((eChunk + 1) * (CHUNK_SZ + 16)) - 1;
+        long reqStart = 12 + (chunkIdx * (CHUNK_SZ + 16));
+        long reqEnd = 12 + ((chunkIdx + 1) * (CHUNK_SZ + 16)) - 1;
         if (reqEnd > 12 + totCiph - 13) reqEnd = 12 + totCiph - 13;
+        if (reqStart > reqEnd) return new byte[0];
 
-        // prepare manual decrypt
+        // fetch data
         byte[] cData = fetchNet(u, reqStart, reqEnd);
-        Cipher ciph = Cipher.getInstance("AES/GCM/NoPadding");
-        ByteArrayOutputStream ptBuf = new ByteArrayOutputStream();
-        int off = 0;
-        long curC = sChunk;
-        byte[] kSlice = Arrays.copyOfRange(fKey, 0, 32);
-
-        // decrypt
-        while (off < cData.length) {
-            int bLen = Math.min(CHUNK_SZ + 16, cData.length - off);
-            byte[] iv = mkIv(gIv, curC++);
-            ciph.init(Cipher.DECRYPT_MODE, new SecretKeySpec(kSlice, "AES"), new GCMParameterSpec(128, iv));
-            ptBuf.write(ciph.doFinal(cData, off, bLen));
-            off += bLen;
+        if (cData.length == 0) return new byte[0];
+        if (onDecrypting != null) {
+            onDecrypting.run();
         }
 
-        // cut to requested size
-        byte[] fullPt = ptBuf.toByteArray();
-        int sIdx = (int) (ptStart % CHUNK_SZ);
-        int fLen = Math.min(ptLen, fullPt.length - sIdx);
-        if (sIdx < 0 || sIdx >= fullPt.length) return new byte[0];
-        return Arrays.copyOfRange(fullPt, sIdx, sIdx + fLen);
+        // decrypt chunk
+        byte[] kSlice = Arrays.copyOfRange(fKey, 0, 32);
+        byte[] iv = mkIv(gIv, chunkIdx);
+        Cipher ciph = Cipher.getInstance("AES/GCM/NoPadding");
+        ciph.init(Cipher.DECRYPT_MODE, new SecretKeySpec(kSlice, "AES"), new GCMParameterSpec(128, iv));
+        byte[] plaintext = ciph.doFinal(cData);
+        sclear(kSlice);
+        return plaintext;
     }
 }

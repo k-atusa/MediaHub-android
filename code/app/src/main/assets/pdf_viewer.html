@@ -9,16 +9,14 @@
     <style>
         body {
             margin: 0;
-            padding: 0;
             background-color: #333;
+            font-family: sans-serif;
+            color: #fff;
         }
 
         #viewer-container {
             width: 100%;
             overflow: auto;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
             padding-bottom: 70px;
         }
 
@@ -28,12 +26,27 @@
             display: flex;
             flex-direction: column;
             align-items: center;
+            min-width: max-content;
         }
 
-        canvas {
-            display: block;
+        .page-container {
+            position: relative;
             margin: 10px 0;
+            background-color: #fff;
             box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .page-container canvas {
+            display: block;
+        }
+
+        .page-placeholder {
+            color: #888;
+            font-size: 14px;
+            user-select: none;
         }
 
         #loading {
@@ -41,8 +54,6 @@
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            color: white;
-            font-family: sans-serif;
             z-index: 10;
         }
 
@@ -52,7 +63,6 @@
             left: 50%;
             transform: translateX(-50%);
             display: none;
-            flex-direction: row;
             align-items: center;
             gap: 8px;
             background: rgba(0, 0, 0, 0.7);
@@ -67,7 +77,7 @@
             border: none;
             border-radius: 50%;
             background: rgba(255, 255, 255, 0.2);
-            color: white;
+            color: #fff;
             font-size: 18px;
             font-weight: bold;
             cursor: pointer;
@@ -81,8 +91,6 @@
         }
 
         #zoom-label {
-            color: white;
-            font-family: sans-serif;
             font-size: 12px;
             min-width: 40px;
             text-align: center;
@@ -103,81 +111,193 @@
 
     <script>
         const url = new URLSearchParams(window.location.search).get('file');
-        if (url) {
+        if (!url) {
+            document.getElementById('loading').innerText = 'No PDF file specified.';
+        } else {
             const pdfjsLib = window['pdfjs-dist/build/pdf'];
             pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
+            // get elements
             const wrapper = document.getElementById('page-wrapper');
             const loading = document.getElementById('loading');
             const zoomControls = document.getElementById('zoom-controls');
             const zoomLabel = document.getElementById('zoom-label');
 
+            // set states
             const BASE_SCALE = 1.5;
             const INITIAL_ZOOM = 0.4;
             let cssZoom = INITIAL_ZOOM;
+            let pdfDoc = null;
+            let firstPageReady = false;
+            const pageStates = {}; // pageNum -> { container, rendered, rendering, renderTask, canvas }
 
+            // zoom by css transform
             function applyZoom() {
-                wrapper.style.transform = 'scale(' + cssZoom + ')';
-                var h = wrapper.scrollHeight;
-                wrapper.style.marginBottom = -(h * (1 - cssZoom)) + 'px';
-                zoomLabel.innerText = Math.round(cssZoom / INITIAL_ZOOM * 100) + '%';
+                wrapper.style.transform = `scale(${cssZoom})`;
+                wrapper.style.marginBottom = `${-(wrapper.scrollHeight * (1 - cssZoom))}px`;
+                zoomLabel.innerText = `${Math.round(cssZoom / INITIAL_ZOOM * 100)}%`;
+
+                // allign to center
+                const container = document.getElementById('viewer-container');
+                setTimeout(() => {
+                    if (container && container.scrollWidth > window.innerWidth) {
+                        container.scrollLeft = (container.scrollWidth - window.innerWidth) / 2;
+                    } else if (container) {
+                        container.scrollLeft = 0;
+                    }
+                }, 0);
             }
 
+            // load pdf
             const loadingTask = pdfjsLib.getDocument(url);
-
-            // Show download progress
-            loadingTask.onProgress = function (progress) {
-                if (progress.total > 0) {
-                    const pct = Math.round(progress.loaded / progress.total * 100);
-                    loading.innerText = 'Downloading... ' + pct + '%';
-                } else {
-                    const mb = (progress.loaded / 1048576).toFixed(1);
-                    loading.innerText = 'Downloading... ' + mb + ' MB';
-                }
+            loadingTask.onProgress = (p) => {
+                loading.innerText = p.total > 0
+                    ? `Downloading... ${Math.round(p.loaded / p.total * 100)}%`
+                    : `Downloading... ${(p.loaded / 1048576).toFixed(1)} MB`;
             };
 
-            loadingTask.promise.then(pdf => {
-                loading.innerText = 'Rendering...';
-                let rendered = 0;
-                for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-                    pdf.getPage(pageNum).then(page => {
-                        const viewport = page.getViewport({ scale: BASE_SCALE });
-                        const canvas = document.createElement('canvas');
-                        const context = canvas.getContext('2d');
-                        canvas.height = viewport.height;
-                        canvas.width = viewport.width;
-                        wrapper.appendChild(canvas);
+            // observer to render/unload pages based on visibility
+            const observer = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    const pageNum = parseInt(entry.target.dataset.pageNumber, 10);
+                    if (entry.isIntersecting) renderPage(pageNum);
+                    else unloadPage(pageNum);
+                });
+            }, { rootMargin: '150% 0px' });
 
-                        page.render({
-                            canvasContext: context,
-                            viewport: viewport
-                        }).promise.then(() => {
-                            rendered++;
-                            if (rendered >= pdf.numPages) {
-                                loading.style.display = 'none';
-                                zoomControls.style.display = 'flex';
-                                applyZoom();
-                            } else {
-                                loading.innerText = 'Rendering... ' + rendered + '/' + pdf.numPages;
-                            }
-                        });
+            // render page
+            function renderPage(pageNum) {
+                const s = pageStates[pageNum];
+                if (!s || s.rendered || s.rendering || !pdfDoc) return;
+                s.rendering = true;
+
+                pdfDoc.getPage(pageNum).then(page => {
+                    // set container size
+                    if (!s.rendering) { page.cleanup(); return; }
+                    const vp = page.getViewport({ scale: BASE_SCALE });
+                    s.container.style.width = `${vp.width}px`;
+                    s.container.style.height = `${vp.height}px`;
+
+                    // create canvas
+                    const canvas = document.createElement('canvas');
+                    canvas.width = vp.width;
+                    canvas.height = vp.height;
+                    s.container.innerHTML = '';
+                    s.container.appendChild(canvas);
+                    s.canvas = canvas;
+
+                    // render page
+                    s.renderTask = page.render({
+                        canvasContext: canvas.getContext('2d', { alpha: false }),
+                        viewport: vp
                     });
+
+                    // cleanup callbacks
+                    s.renderTask.promise.then(() => {
+                        s.rendering = false;
+                        s.rendered = true;
+                        s.renderTask = null;
+                        page.cleanup();
+
+                        if (!firstPageReady) {
+                            firstPageReady = true;
+                            loading.style.display = 'none';
+                            zoomControls.style.display = 'flex';
+                            applyZoom();
+                        }
+                    }).catch(err => {
+                        s.rendering = false;
+                        s.renderTask = null;
+                        if (err?.name !== 'RenderingCancelledException') {
+                            console.error(`Render error p${pageNum}:`, err);
+                        }
+                    });
+                }).catch(err => {
+                    s.rendering = false;
+                    console.error(`getPage error p${pageNum}:`, err);
+                });
+            }
+
+            // unload page
+            function unloadPage(pageNum) {
+                const s = pageStates[pageNum];
+                if (!s) return;
+
+                if (s.renderTask) {
+                    s.renderTask.cancel();
+                    s.renderTask = null;
                 }
+                s.rendering = false;
+
+                if (s.canvas) {
+                    s.canvas.width = 0;
+                    s.canvas.height = 0;
+                    s.canvas.remove();
+                    s.canvas = null;
+                }
+                s.rendered = false;
+
+                if (s.container && !s.container.hasChildNodes()) {
+                    const ph = document.createElement('div');
+                    ph.className = 'page-placeholder';
+                    ph.innerText = `Page ${pageNum}`;
+                    s.container.appendChild(ph);
+                }
+            }
+
+            // start loading
+            loadingTask.promise.then(pdf => {
+                pdfDoc = pdf;
+                loading.innerText = 'Initializing pages...';
+
+                pdf.getPage(1).then(p1 => {
+                    const vp = p1.getViewport({ scale: BASE_SCALE });
+                    const defW = `${vp.width}px`;
+                    const defH = `${vp.height}px`;
+                    p1.cleanup();
+
+                    // insert page containers
+                    const frag = document.createDocumentFragment();
+                    for (let i = 1; i <= pdf.numPages; i++) {
+                        const c = document.createElement('div');
+                        c.className = 'page-container';
+                        c.style.width = defW;
+                        c.style.height = defH;
+                        c.dataset.pageNumber = i;
+
+                        const ph = document.createElement('div');
+                        ph.className = 'page-placeholder';
+                        ph.innerText = `Page ${i}`;
+                        c.appendChild(ph);
+
+                        frag.appendChild(c);
+                        pageStates[i] = { container: c, rendered: false, rendering: false, renderTask: null, canvas: null };
+                        observer.observe(c);
+                    }
+                    wrapper.appendChild(frag);
+
+                    setTimeout(() => { if (!firstPageReady) renderPage(1); }, 100);
+                }).catch(err => {
+                    loading.innerText = `Error reading page 1: ${err.message}`;
+                });
             }).catch(err => {
-                loading.innerText = 'Error loading PDF: ' + err.message;
-                console.error(err);
+                loading.innerText = `Error loading PDF: ${err.message}`;
             });
 
-            // Zoom via CSS transform — instant, no re-render
+            // zoom controls
             const ZOOM_STEP = INITIAL_ZOOM * 0.1;
-            document.getElementById('btn-zoom-in').addEventListener('click', () => {
+            document.getElementById('btn-zoom-in').onclick = () => {
                 if (cssZoom < 3.0) { cssZoom += ZOOM_STEP; applyZoom(); }
-            });
-            document.getElementById('btn-zoom-out').addEventListener('click', () => {
+            };
+            document.getElementById('btn-zoom-out').onclick = () => {
                 if (cssZoom > 0.2) { cssZoom -= ZOOM_STEP; applyZoom(); }
+            };
+
+            // cleanup on unload
+            window.addEventListener('unload', () => {
+                observer.disconnect();
+                pdfDoc?.destroy();
             });
-        } else {
-            document.getElementById('loading').innerText = 'No PDF file specified.';
         }
     </script>
 </body>

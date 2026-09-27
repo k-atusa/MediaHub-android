@@ -14,8 +14,8 @@ android {
         applicationId = "com.example.k7mediahub"
         minSdk = 35
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.4.2"
+        versionCode = 5
+        versionName = "1.5.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

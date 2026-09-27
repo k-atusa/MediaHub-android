@@ -1,4 +1,4 @@
-# MediaHub-android v0.0.0
+# MediaHub-android v1.5.0
 
 project WHY(Web Hub Yard) MediaHub-android
 
@@ -12,7 +12,7 @@ project WHY(Web Hub Yard) MediaHub-android
 
 ## Auto Login
 
-- Enable `Auto Login` during manual login to register and save credentials.
+- Enable `Save Login` during manual login to register and save credentials.
 - Leave the password field empty and login to execute auto-login.
 - Secured via hardware-backed Keystore (TEE) and biometric authentication.
 

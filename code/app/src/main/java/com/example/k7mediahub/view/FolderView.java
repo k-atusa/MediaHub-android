@@ -20,28 +20,29 @@ import com.example.k7mediahub.SVCC1;
 import java.util.ArrayList;
 import java.util.List;
 
-// Main folder list activity
+// folder list view activity
 public class FolderView extends AppCompatActivity {
+    // connection fields
     private RecyclerView rv;
     private TextView tStat;
     private FldAdp adp;
     private final List<String> items = new ArrayList<>();
 
-    // Standard lifecycle
+    // register activity lifecycle
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
         setContentView(R.layout.view_folder);
 
+        // get UI components
         rv = findViewById(R.id.rvFolders);
         tStat = findViewById(R.id.txtStatus);
         Button bAdd = findViewById(R.id.btnAddFolder);
-
         adp = new FldAdp();
         rv.setLayoutManager(new LinearLayoutManager(this));
         rv.setAdapter(adp);
 
-        // Listen for folders
+        // observe main bus
         SVCC1.getChan().ToMainBus.observe(this, ev -> {
             if (ev == null) return;
             if ("FOLDERS_LOADED".equals(ev.action)) {
@@ -54,7 +55,7 @@ public class FolderView extends AppCompatActivity {
             }
         });
 
-        // Add folder dialog
+        // show add folder dialog
         bAdd.setOnClickListener(v -> {
             EditText et = new EditText(this);
             new AlertDialog.Builder(this)
@@ -72,11 +73,11 @@ public class FolderView extends AppCompatActivity {
                 .show();
         });
 
-        // Initial fetch
+        // fetch folder list
         SVCC1.getChan().SendToSvc("GET_FOLDERS", null);
     }
 
-    // Folder list adapter
+    // folder adapter
     private class FldAdp extends RecyclerView.Adapter<FldAdp.VH> {
         class VH extends RecyclerView.ViewHolder {
             final TextView t;
@@ -84,7 +85,7 @@ public class FolderView extends AppCompatActivity {
                 super(v);
                 t = v.findViewById(R.id.txtFolderName);
                 v.setOnClickListener(view -> {
-                    int p = getAdapterPosition();
+                    int p = getBindingAdapterPosition();
                     if (p != RecyclerView.NO_POSITION) {
                         Intent it = new Intent(FolderView.this, FileView.class);
                         it.putExtra("folder", items.get(p));

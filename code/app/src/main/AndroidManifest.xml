@@ -32,7 +32,7 @@
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize" />
 
         <service
-            android:name=".app.SvcMH"
+            android:name=".app.MHsvc"
             android:foregroundServiceType="dataSync"
             android:stopWithTask="true"
             android:exported="false" />
