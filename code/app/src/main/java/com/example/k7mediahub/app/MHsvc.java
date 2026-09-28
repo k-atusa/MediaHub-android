@@ -21,7 +21,6 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -37,7 +36,8 @@ public class MHsvc extends Service {
     public static final ConcurrentHashMap<String, byte[]> prefetchData = new ConcurrentHashMap<>();
 
     // service and constants
-    private ExecutorService executor;
+    private ExecutorService cmdExecutor;
+    private ExecutorService thumbExecutor;
     private static final String CHANNEL_ID = "k7mediahub_service";
     private static final int NOTIF_ID = 1;
 
@@ -77,9 +77,9 @@ public class MHsvc extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        executor = Executors.newFixedThreadPool(4);
+        cmdExecutor = Executors.newFixedThreadPool(4);
+        thumbExecutor = Executors.newFixedThreadPool(4);
         cacheMgr = new MHcache(getApplicationContext());
-        cacheMgr.EvictFileCache();
         clearTempFiles();
 
         makeNotifChan();
@@ -104,8 +104,8 @@ public class MHsvc extends Service {
             streamer.Stop();
             streamer = null;
         }
-        if (executor != null)
-            executor.shutdown();
+        if (cmdExecutor != null) cmdExecutor.shutdown();
+        if (thumbExecutor != null) thumbExecutor.shutdown();
         core = null;
         mediaData = null;
         MHcache.ClearMemCache();
@@ -173,7 +173,7 @@ public class MHsvc extends Service {
     // command observe and execute
     private final Observer<SVCC1.VEvent> cmdObserver = event -> {
         if (event == null) return;
-        executor.submit(() -> {
+        cmdExecutor.submit(() -> {
             try {
                 handleCommand(event);
             } catch (Exception e) {
@@ -198,6 +198,9 @@ public class MHsvc extends Service {
                 break;
             case "MK_FOLDER":
                 doMkFolder(d);
+                break;
+            case "GET_THUMBS":
+                doGetThumbs(d);
                 break;
             case "GET_FILES":
                 doGetFiles(d);
@@ -331,6 +334,35 @@ public class MHsvc extends Service {
         doGetFolders();
     }
 
+    // load thumbnail of files
+    private void loadThumb(String folder, MHcore.FileMap fm, String fileName) {
+        if (MHcache.HasMemThumb(folder + "/" + fileName)) return;
+        try {
+            byte[] thumb = core.DnMem(fm, fileName, true);
+            if (thumb != null && thumb.length > 0) {
+                MHcache.PutMemThumb(folder + "/" + fileName, thumb);
+                Bundle b = new Bundle();
+                b.putString("folder", folder);
+                b.putString("fileName", fileName);
+                sendToMain("THUMB_LOADED", b);
+            }
+        } catch (Exception ignored) { }
+    }
+
+    // fetch thumbnail list for visible page
+    private void doGetThumbs(Bundle d) throws Exception {
+        chkCore();
+        String folder = d.getString("folder", "");
+        ArrayList<String> fileNames = d.getStringArrayList("files");
+        if (fileNames == null || fileNames.isEmpty()) return;
+        MHcore.FileMap fm = getFileMap(folder);
+        for (String name : fileNames) {
+            if (!MHcache.HasMemThumb(folder + "/" + name)) {
+                thumbExecutor.submit(() -> loadThumb(folder, fm, name));
+            }
+        }
+    }
+
     // get file map from cache or network
     private MHcore.FileMap getFileMap(String folder) throws Exception {
         MHcore.FileMap fm = MHcache.GetMemFileMap(folder);
@@ -342,25 +374,11 @@ public class MHsvc extends Service {
         return fm;
     }
 
-    // load thumbnail of files
-    private void loadThumb(String folder, MHcore.FileMap fm, String fileName) {
-        if (MHcache.HasMemThumb(folder + "/" + fileName)) return;
-        try {
-            byte[] thumb = core.DnMem(fm, fileName, true);
-            if (thumb != null && thumb.length > 0) {
-                MHcache.PutMemThumb(folder + "/" + fileName, thumb);
-                SVCC1.getChan().SetInt(1, MHcache.GetMemThumbCount());
-            }
-        } catch (Exception ignored) { }
-    }
-
     // fetch file list (file map)
     private void doGetFiles(Bundle d) throws Exception {
         chkCore();
         String folder = d.getString("folder", "");
-        updateNotif("Fetching file map");
-        MHcore.FileMap fm = core.GetFileMap(folder);
-        MHcache.PutMemFileMap(folder, fm);
+        MHcore.FileMap fm = getFileMap(folder);
 
         // sort file names
         ArrayList<String> names = new ArrayList<>(fm.fileMap.keySet());
@@ -370,11 +388,6 @@ public class MHsvc extends Service {
         b.putStringArrayList("names", names);
         updateNotif("MediaHub service is ready");
         sendToMain("FILES_LOADED", b);
-
-        // load thumbnails
-        for (String name : names) {
-            executor.submit(() -> loadThumb(folder, fm, name));
-        }
     }
 
     // upload files

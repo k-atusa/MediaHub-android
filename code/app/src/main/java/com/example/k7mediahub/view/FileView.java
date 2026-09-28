@@ -11,6 +11,7 @@ import android.widget.CheckBox;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
@@ -128,6 +129,18 @@ public class FileView extends AppCompatActivity {
                         applyFilter();
                     }
                     break;
+                case "THUMB_LOADED":
+                    if (!d.getString("folder", "").equals(fld)) break;
+                    String fileName = d.getString("fileName", "");
+                    int idx = items.indexOf(fileName);
+                    if (idx >= 0) {
+                        int pageStart = pg * 30;
+                        int pageCount = adp.getItemCount();
+                        if (idx >= pageStart && idx < pageStart + pageCount) {
+                            adp.notifyItemChanged(idx - pageStart);
+                        }
+                    }
+                    break;
                 case "UPLOAD_PROGRESS":
                     SVCC1.getChan().SetString(1, "Up: " + d.getInt("current") + "/" + d.getInt("total"));
                     break;
@@ -137,6 +150,10 @@ public class FileView extends AppCompatActivity {
                 case "UPLOAD_DONE":
                 case "DOWNLOAD_DONE":
                     refresh();
+                    break;
+                case "ERROR":
+                    String errMsg = d.getString("msg", "Unknown Error");
+                    Toast.makeText(FileView.this, errMsg, Toast.LENGTH_LONG).show();
                     break;
             }
         });
@@ -151,11 +168,6 @@ public class FileView extends AppCompatActivity {
         };
         SVCC1.getChan().IntSlots[0].observe(this, p -> syncProgress.run());
         SVCC1.getChan().StringSlots[1].observe(this, s -> syncProgress.run());
-
-        // refresh thumbnails
-        SVCC1.getChan().IntSlots[1].observe(this, cnt -> {
-            if (adp != null) adp.notifyDataSetChanged();
-        });
 
         // link add/download button
         bAdd.setOnClickListener(v -> IO1.SelectFile(lch, true));
@@ -310,6 +322,19 @@ public class FileView extends AppCompatActivity {
             .show();
     }
 
+    // request thumbnails for visible page and next page
+    private void reqThumbs() {
+        if (items.isEmpty()) return;
+        int start = pg * 30;
+        int end = Math.min(items.size(), (pg + 2) * 30);
+        if (start >= end) return;
+        ArrayList<String> targetFiles = new ArrayList<>(items.subList(start, end));
+        Bundle b = new Bundle();
+        b.putString("folder", fld);
+        b.putStringArrayList("files", targetFiles);
+        SVCC1.getChan().SendToSvc("GET_THUMBS", b);
+    }
+
     // refresh file list
     private void refresh() {
         Bundle b = new Bundle();
@@ -325,6 +350,7 @@ public class FileView extends AppCompatActivity {
         View pnl = findViewById(R.id.layoutPagination);
         pnl.setVisibility(items.size() > 30 ? View.VISIBLE : View.GONE);
         ((TextView) findViewById(R.id.txtPageInfo)).setText((pg + 1) + " / " + ((items.size() + 29) / 30));
+        reqThumbs();
     }
 
     // file adapter

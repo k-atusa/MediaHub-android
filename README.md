@@ -1,4 +1,4 @@
-# MediaHub-android v1.5.1
+# MediaHub-android v1.5.2
 
 project WHY(Web Hub Yard) MediaHub-android
 

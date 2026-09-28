@@ -685,6 +685,10 @@ public class MHcore {
             URL u = new URL(srvUrl + "/api/media/" + fm.folderPID + "/" + filePID + "/" + typ);
             HttpURLConnection c = (HttpURLConnection) u.openConnection();
             c.setRequestMethod("GET");
+            if (isThumbnail) {
+                c.setConnectTimeout(3000);
+                c.setReadTimeout(5000);
+            }
             int resCode = c.getResponseCode();
 
             // download all

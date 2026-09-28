@@ -69,6 +69,7 @@ public class MHcache {
     public MHcache(Context ctx) {
         fileCacheRoot = new File(ctx.getCacheDir(), "filecache");
         ensureFileDirs();
+        EvictFileCache();
         TrimFileThumbs();
     }
 
@@ -103,12 +104,7 @@ public class MHcache {
     public byte[] GetFileCache(String type, String key) {
         try {
             File file = getFileCachePath(type, key);
-            if (file.exists()) {
-                if (System.currentTimeMillis() - file.lastModified() < FILE_EXPIRE_MS) {
-                    return readFile(file);
-                }
-                file.delete(); // delete if expired
-            }
+            if (file.exists()) return readFile(file);
         } catch (Exception ignored) { }
         return null;
     }
@@ -199,9 +195,7 @@ public class MHcache {
         if (files == null) return;
         long now = System.currentTimeMillis();
         for (File f : files) {
-            if (f.isFile() && now - f.lastModified() >= FILE_EXPIRE_MS) {
-                f.delete();
-            }
+            if (f.isFile() && now - f.lastModified() >= FILE_EXPIRE_MS) f.delete();
         }
     }
 }
