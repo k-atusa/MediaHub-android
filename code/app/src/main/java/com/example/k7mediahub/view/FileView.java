@@ -48,6 +48,7 @@ public class FileView extends AppCompatActivity {
     private ActivityResultLauncher<Intent> lch;
 
     // keyword filter state
+    private boolean keywordsBuilt = false;
     private final List<String> availKeywords = new ArrayList<>();
     private final Set<String> selectKeywords = new HashSet<>();
     private static final Pattern BRACKET_PATTERN = Pattern.compile("[\\[\\(]([^\\]\\)]+)[\\]\\)]");
@@ -118,8 +119,14 @@ public class FileView extends AppCompatActivity {
                     if (ns != null) allItems.addAll(ns);
                     sel.clear();
                     pg = 0;
-                    buildKeywords();
-                    applyFilter();
+                    keywordsBuilt = false;
+                    if (selectKeywords.isEmpty()) {
+                        items.clear();
+                        items.addAll(allItems);
+                        update();
+                    } else {
+                        applyFilter();
+                    }
                     break;
                 case "UPLOAD_PROGRESS":
                     SVCC1.getChan().SetString(1, "Up: " + d.getInt("current") + "/" + d.getInt("total"));
@@ -239,6 +246,7 @@ public class FileView extends AppCompatActivity {
         }
         Collections.sort(availKeywords);
         selectKeywords.retainAll(new HashSet<>(availKeywords));
+        keywordsBuilt = true;
     }
 
     // apply keyword filter
@@ -247,6 +255,7 @@ public class FileView extends AppCompatActivity {
         if (selectKeywords.isEmpty()) {
             items.addAll(allItems);
         } else {
+            if (!keywordsBuilt) buildKeywords();
             for (String fileName : allItems) {
                 Set<String> tokenSet = tokenCache.get(fileName);
                 if (tokenSet == null) continue;
@@ -268,6 +277,7 @@ public class FileView extends AppCompatActivity {
 
     // show keyword selection dialog
     private void showKeyDialog() {
+        if (!keywordsBuilt) buildKeywords();
         if (availKeywords.isEmpty()) {
             tStat.setText("No keywords found");
             return;

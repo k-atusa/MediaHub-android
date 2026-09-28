@@ -3,9 +3,8 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=2.0, user-scalable=yes">
     <title>PDF Viewer</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <style>
         body {
             margin: 0;
@@ -109,13 +108,14 @@
         <button id="btn-zoom-in">+</button>
     </div>
 
-    <script>
+    <script type="module">
+        import * as pdfjsLib from './pdf.mjs';
+
         const url = new URLSearchParams(window.location.search).get('file');
         if (!url) {
             document.getElementById('loading').innerText = 'No PDF file specified.';
         } else {
-            const pdfjsLib = window['pdfjs-dist/build/pdf'];
-            pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+            pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.mjs';
 
             // get elements
             const wrapper = document.getElementById('page-wrapper');
@@ -149,7 +149,7 @@
             }
 
             // load pdf
-            const loadingTask = pdfjsLib.getDocument(url);
+            const loadingTask = pdfjsLib.getDocument({ url: url });
             loadingTask.onProgress = (p) => {
                 loading.innerText = p.total > 0
                     ? `Downloading... ${Math.round(p.loaded / p.total * 100)}%`
@@ -178,17 +178,23 @@
                     s.container.style.width = `${vp.width}px`;
                     s.container.style.height = `${vp.height}px`;
 
-                    // create canvas
+                    // create canvas with High-DPI scaling
+                    const dpr = window.devicePixelRatio || 1;
                     const canvas = document.createElement('canvas');
-                    canvas.width = vp.width;
-                    canvas.height = vp.height;
+                    canvas.width = Math.floor(vp.width * dpr);
+                    canvas.height = Math.floor(vp.height * dpr);
+                    canvas.style.width = `${vp.width}px`;
+                    canvas.style.height = `${vp.height}px`;
                     s.container.innerHTML = '';
                     s.container.appendChild(canvas);
                     s.canvas = canvas;
 
+                    const ctx = canvas.getContext('2d', { alpha: false });
+                    ctx.scale(dpr, dpr);
+
                     // render page
                     s.renderTask = page.render({
-                        canvasContext: canvas.getContext('2d', { alpha: false }),
+                        canvasContext: ctx,
                         viewport: vp
                     });
 
@@ -285,12 +291,21 @@
             });
 
             // zoom controls
-            const ZOOM_STEP = INITIAL_ZOOM * 0.1;
+            const MIN_ZOOM = INITIAL_ZOOM * 0.5; // 50%
+            const MAX_ZOOM = INITIAL_ZOOM * 2.0; // 200%
+            const ZOOM_STEP = INITIAL_ZOOM * 0.1; // 10% step
+
             document.getElementById('btn-zoom-in').onclick = () => {
-                if (cssZoom < 3.0) { cssZoom += ZOOM_STEP; applyZoom(); }
+                if (cssZoom < MAX_ZOOM - 0.005) {
+                    cssZoom = Math.min(MAX_ZOOM, cssZoom + ZOOM_STEP);
+                    applyZoom();
+                }
             };
             document.getElementById('btn-zoom-out').onclick = () => {
-                if (cssZoom > 0.2) { cssZoom -= ZOOM_STEP; applyZoom(); }
+                if (cssZoom > MIN_ZOOM + 0.005) {
+                    cssZoom = Math.max(MIN_ZOOM, cssZoom - ZOOM_STEP);
+                    applyZoom();
+                }
             };
 
             // cleanup on unload

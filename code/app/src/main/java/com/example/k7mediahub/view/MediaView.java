@@ -2,18 +2,24 @@ package com.example.k7mediahub.view;
 
 import android.annotation.SuppressLint;
 import android.content.pm.ActivityInfo;
-import android.os.Build;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.view.WindowManager;
 import android.webkit.CookieManager;
 import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
+import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import java.io.InputStream;
+import java.util.HashMap;
+import java.util.Map;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -105,6 +111,31 @@ public class MediaView extends AppCompatActivity {
         requestMedia(currentFile);
     }
 
+    @Override
+    protected void onPause() {
+        super.onPause();
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (isVideo) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    }
+
+    @Override
+    protected void onDestroy() {
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        if (web != null) {
+            web.stopLoading();
+            web.clearCache(true);
+            web.clearHistory();
+            CookieManager.getInstance().removeAllCookies(null);
+            web.destroy();
+        }
+        super.onDestroy();
+    }
+
     // configure webview
     private void setupWebView(WebView v) {
         if (v == null) return;
@@ -112,6 +143,29 @@ public class MediaView extends AppCompatActivity {
 
         // set parent view of webview
         v.setWebViewClient(new WebViewClient() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                if (request != null && request.getUrl() != null) {
+                    String url = request.getUrl().toString();
+                    if (url.startsWith("https://appassets.android.local/")) {
+                        try {
+                            String path = request.getUrl().getPath();
+                            if (path != null && path.startsWith("/")) {
+                                path = path.substring(1);
+                            }
+                            String mime = "text/html";
+                            if (path.endsWith(".mjs") || path.endsWith(".js")) mime = "text/javascript";
+                            else if (path.endsWith(".css")) mime = "text/css";
+                            InputStream is = getAssets().open(path); // response with assets instead
+                            Map<String, String> headers = new HashMap<>();
+                            headers.put("Access-Control-Allow-Origin", "*");
+                            return new WebResourceResponse(mime, "UTF-8", 200, "OK", headers, is);
+                        } catch (Exception ignored) { }
+                    }
+                }
+                return super.shouldInterceptRequest(view, request);
+            }
+
             @Override
             public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
                 if (web != null) {
@@ -190,6 +244,7 @@ public class MediaView extends AppCompatActivity {
         currentIndex = newIndex;
         currentFile = fileList.get(currentIndex);
         isVideo = false;
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         // reset webview state
         if (web != null) {
@@ -271,7 +326,7 @@ public class MediaView extends AppCompatActivity {
                     String textContent = new String(txtD, StandardCharsets.UTF_8);
                     String escapedText = TextUtils.htmlEncode(textContent);
                     String h = "<!DOCTYPE html><html><head><style>"
-                        + "body{margin:0;padding:32px 16px;background:#121212;color:#fff;font-family:sans-serif;white-space:pre-wrap;word-wrap:break-word;}"
+                        + "body{margin:0;padding:64px 16px;background:#121212;color:#fff;font-family:sans-serif;font-size:16px;line-height:1.6;white-space:pre-wrap;word-wrap:break-word;}"
                         + "</style></head><body>" + escapedText + "</body></html>";
                     web.loadDataWithBaseURL(null, h, "text/html", "UTF-8", null);
                     MHsvc.mediaData = null;
@@ -292,6 +347,7 @@ public class MediaView extends AppCompatActivity {
                         + "<body><video controls autoplay playsinline>"
                         + "<source src='" + vUrl + "' type='video/mp4'></video></body></html>";
                     web.loadDataWithBaseURL("http://127.0.0.1/", h, "text/html", "UTF-8", null);
+                    getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                     tStat.setText(name);
                     isVideo = true;
                     hideNavBar();
@@ -304,7 +360,7 @@ public class MediaView extends AppCompatActivity {
                 if (!pUrl.isEmpty()) {
                     setWeb();
                     try {
-                        String u = "file:///android_asset/pdf_viewer.html?file=" + java.net.URLEncoder.encode(pUrl, "UTF-8");
+                        String u = "https://appassets.android.local/pdf_viewer.html?file=" + java.net.URLEncoder.encode(pUrl, "UTF-8");
                         web.loadUrl(u);
                     } catch (Exception e) {
                         web.loadUrl(pUrl);
@@ -331,6 +387,7 @@ public class MediaView extends AppCompatActivity {
         web.getSettings().setDomStorageEnabled(true);
         web.getSettings().setAllowFileAccess(true);
         web.getSettings().setAllowContentAccess(true);
+        web.getSettings().setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         web.getSettings().setBuiltInZoomControls(true);
         web.getSettings().setDisplayZoomControls(false);
         web.getSettings().setUseWideViewPort(true);
@@ -345,18 +402,5 @@ public class MediaView extends AppCompatActivity {
             ic.hide(WindowInsets.Type.navigationBars());
             ic.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
         }
-    }
-
-    // destroy webview
-    @Override
-    protected void onDestroy() {
-        if (web != null) {
-            web.stopLoading();
-            web.clearCache(true);
-            web.clearHistory();
-            CookieManager.getInstance().removeAllCookies(null);
-            web.destroy();
-        }
-        super.onDestroy();
     }
 }
