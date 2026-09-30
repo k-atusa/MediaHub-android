@@ -344,8 +344,15 @@ public class MediaView extends AppCompatActivity {
                         + "<style>*{margin:0;padding:0;overflow:hidden}body{background:#000;"
                         + "display:flex;align-items:center;justify-content:center;height:100vh}"
                         + "video{width:100%;height:100%;object-fit:contain}</style></head>"
-                        + "<body><video controls autoplay playsinline>"
-                        + "<source src='" + vUrl + "' type='video/mp4'></video></body></html>";
+                        + "<body><video id='vPlayer' controls autoplay playsinline>"
+                        + "<source src='" + vUrl + "' type='video/mp4'></video>"
+                        + "<script>"
+                        + "var v = document.getElementById('vPlayer');"
+                        + "if (v) {"
+                        + "  v.addEventListener('loadedmetadata', function() { if (v.videoHeight > v.videoWidth) v.controlsList = 'nofullscreen'; });"
+                        + "  v.addEventListener('webkitfullscreenchange', function() { if (v.videoHeight > v.videoWidth && document.webkitIsFullScreen) document.webkitExitFullscreen(); });"
+                        + "}"
+                        + "</script></body></html>";
                     web.loadDataWithBaseURL("http://127.0.0.1/", h, "text/html", "UTF-8", null);
                     getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                     tStat.setText(name);

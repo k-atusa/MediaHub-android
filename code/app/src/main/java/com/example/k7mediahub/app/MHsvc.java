@@ -562,7 +562,7 @@ public class MHsvc extends Service {
 
         // check file size and type
         long fileSize = core.GetFileSize(fm, fileName);
-        if (fileSize < 0 || fileSize > 16 * 1048576) return;
+        if (fileSize < 0 || fileSize > 8 * 1048576) return;
 
         String ext = "";
         int dotIdx = fileName.lastIndexOf('.');
