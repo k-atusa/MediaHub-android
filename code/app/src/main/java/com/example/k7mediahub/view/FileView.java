@@ -50,6 +50,7 @@ public class FileView extends AppCompatActivity {
 
     // keyword filter state
     private boolean keywordsBuilt = false;
+    private String customKeyword = "";
     private final List<String> availKeywords = new ArrayList<>();
     private final Set<String> selectKeywords = new HashSet<>();
     private static final Pattern BRACKET_PATTERN = Pattern.compile("[\\[\\(]([^\\]\\)]+)[\\]\\)]");
@@ -257,8 +258,31 @@ public class FileView extends AppCompatActivity {
             }
         }
         Collections.sort(availKeywords);
-        selectKeywords.retainAll(new HashSet<>(availKeywords));
+        Set<String> validSet = new HashSet<>(availKeywords);
+        if (!customKeyword.isEmpty()) validSet.add(customKeyword);
+        selectKeywords.retainAll(validSet);
         keywordsBuilt = true;
+    }
+
+    // case-insensitive substring search
+    private static boolean containsIgnoreCase(String src, String target) {
+        final int srcLen = src.length();
+        final int targetLen = target.length();
+        if (targetLen == 0) return true;
+        if (targetLen > srcLen) return false;
+
+        final char firstLower = Character.toLowerCase(target.charAt(0));
+        final char firstUpper = Character.toUpperCase(target.charAt(0));
+
+        for (int i = 0; i <= srcLen - targetLen; i++) {
+            char c = src.charAt(i);
+            if (c == firstLower || c == firstUpper) {
+                if (src.regionMatches(true, i, target, 0, targetLen)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     // apply keyword filter
@@ -270,11 +294,12 @@ public class FileView extends AppCompatActivity {
             if (!keywordsBuilt) buildKeywords();
             for (String fileName : allItems) {
                 Set<String> tokenSet = tokenCache.get(fileName);
-                if (tokenSet == null) continue;
 
                 boolean match = true;
                 for (String kw : selectKeywords) {
-                    if (!tokenSet.contains(kw)) {
+                    if (kw.isEmpty()) continue;
+                    boolean found = (tokenSet != null && tokenSet.contains(kw)) || containsIgnoreCase(fileName, kw);
+                    if (!found) {
                         match = false;
                         break;
                     }
@@ -287,35 +312,79 @@ public class FileView extends AppCompatActivity {
         update();
     }
 
+    // show custom keyword input dialog
+    private void showKeywordDialog() {
+        android.widget.EditText input = new android.widget.EditText(this);
+        input.setHint("Enter keyword");
+        if (!customKeyword.isEmpty()) {
+            input.setText(customKeyword);
+            input.setSelection(customKeyword.length());
+        }
+        int padding = (int) (16 * getResources().getDisplayMetrics().density);
+        input.setPadding(padding, padding, padding, padding);
+
+        new AlertDialog.Builder(this)
+            .setTitle("Keyword")
+            .setView(input)
+            .setPositiveButton("OK", (d, w) -> {
+                String val = input.getText().toString().trim().toLowerCase();
+                if (!customKeyword.isEmpty()) {
+                    selectKeywords.remove(customKeyword);
+                }
+                customKeyword = val;
+                if (!customKeyword.isEmpty()) {
+                    selectKeywords.add(customKeyword);
+                }
+                applyFilter();
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
     // show keyword selection dialog
     private void showKeyDialog() {
         if (!keywordsBuilt) buildKeywords();
         if (availKeywords.isEmpty()) {
             tStat.setText("No keywords found");
-            return;
         }
 
-        // keyword array
-        String[] kwArray = new String[availKeywords.size()];
-        boolean[] checked = new boolean[availKeywords.size()];
+        int totalCount = availKeywords.size() + 1;
+        String[] kwArray = new String[totalCount];
+        boolean[] checked = new boolean[totalCount];
+
         for (int i = 0; i < availKeywords.size(); i++) {
             kwArray[i] = availKeywords.get(i);
             checked[i] = selectKeywords.contains(availKeywords.get(i));
         }
 
+        // last item: empty string or customKeyword
+        kwArray[totalCount - 1] = customKeyword;
+        checked[totalCount - 1] = !customKeyword.isEmpty() && selectKeywords.contains(customKeyword);
+
         // show dialog
         new AlertDialog.Builder(this)
             .setTitle("Keyword Filter")
             .setMultiChoiceItems(kwArray, checked, (dialog, which, isChecked) -> {
-                if (isChecked) {
-                    selectKeywords.add(availKeywords.get(which));
+                if (which == totalCount - 1) {
+                    if (customKeyword.isEmpty() || isChecked) {
+                        dialog.dismiss();
+                        showKeywordDialog();
+                    } else {
+                        selectKeywords.remove(customKeyword);
+                    }
                 } else {
-                    selectKeywords.remove(availKeywords.get(which));
+                    String targetKw = availKeywords.get(which);
+                    if (isChecked) {
+                        selectKeywords.add(targetKw);
+                    } else {
+                        selectKeywords.remove(targetKw);
+                    }
                 }
             })
             .setPositiveButton("Apply", (d, w) -> applyFilter())
             .setNeutralButton("Clear All", (d, w) -> {
                 selectKeywords.clear();
+                customKeyword = "";
                 applyFilter();
             })
             .setNegativeButton("Cancel", null)

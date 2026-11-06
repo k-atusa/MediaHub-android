@@ -21,7 +21,6 @@ import java.io.InputStream;
 import java.util.HashMap;
 import java.util.Map;
 import android.widget.Button;
-import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -41,7 +40,7 @@ public class MediaView extends AppCompatActivity {
     private WebView web;
     private ProgressBar prog;
     private TextView tStat;
-    private LinearLayout layoutNav;
+    private View layoutNav;
     private Button btnPrev, btnNext;
     private boolean isVideo;
 
@@ -125,6 +124,7 @@ public class MediaView extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        navHandler.removeCallbacks(hideNavRunnable);
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if (web != null) {
             web.stopLoading();
@@ -137,9 +137,16 @@ public class MediaView extends AppCompatActivity {
     }
 
     // configure webview
+    @SuppressLint("ClickableViewAccessibility")
     private void setupWebView(WebView v) {
         if (v == null) return;
         v.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_BOUND, false);
+        v.setOnTouchListener((view, event) -> { // make button when touch
+            if (event.getAction() == android.view.MotionEvent.ACTION_DOWN) {
+                updateNavBtns();
+            }
+            return false;
+        });
 
         // set parent view of webview
         v.setWebViewClient(new WebViewClient() {
@@ -205,8 +212,8 @@ public class MediaView extends AppCompatActivity {
                 if (web != null) web.setVisibility(View.GONE);
                 layoutNav.setVisibility(View.GONE);
 
+                // set orientation, hide status bar
                 setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
-
                 WindowInsetsController ic = getWindow().getInsetsController();
                 if (ic != null) {
                     ic.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
@@ -222,8 +229,8 @@ public class MediaView extends AppCompatActivity {
                 cCall.onCustomViewHidden();
                 if (web != null) web.setVisibility(View.VISIBLE);
 
+                // set orientation, hide status bar
                 setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
-
                 WindowInsetsController ic = getWindow().getInsetsController();
                 if (ic != null) {
                     ic.show(WindowInsets.Type.statusBars());
@@ -236,6 +243,31 @@ public class MediaView extends AppCompatActivity {
                 }
             }
         });
+    }
+
+    // auto hide navigation buttons handler
+    private final android.os.Handler navHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable hideNavRunnable = () -> {
+        if (layoutNav != null && layoutNav.getVisibility() == View.VISIBLE) {
+            layoutNav.animate().alpha(0f).setDuration(300).withEndAction(() -> {
+                layoutNav.setVisibility(View.GONE);
+                layoutNav.setAlpha(1f);
+            });
+        }
+    };
+
+    // update navigation buttons
+    private void updateNavBtns() {
+        navHandler.removeCallbacks(hideNavRunnable);
+        if (fileList == null || fileList.size() <= 1 || isVideo) {
+            layoutNav.setVisibility(View.GONE);
+            return;
+        }
+        layoutNav.setAlpha(1f);
+        layoutNav.setVisibility(View.VISIBLE);
+        btnPrev.setEnabled(currentIndex > 0);
+        btnNext.setEnabled(currentIndex < fileList.size() - 1);
+        navHandler.postDelayed(hideNavRunnable, 2500); // hide after 2.5s
     }
 
     // navigate file list
@@ -253,6 +285,7 @@ public class MediaView extends AppCompatActivity {
             web.setVisibility(View.GONE);
         }
         prog.setVisibility(View.VISIBLE);
+        navHandler.removeCallbacks(hideNavRunnable);
         layoutNav.setVisibility(View.GONE);
         tStat.setText(currentFile);
 
@@ -282,17 +315,6 @@ public class MediaView extends AppCompatActivity {
         req.putString("folder", folder);
         req.putString("file", nextFile);
         SVCC1.getChan().SendToSvc("PREFETCH_MEDIA", req);
-    }
-
-    // update navigation buttons
-    private void updateNavBtns() {
-        if (fileList == null || fileList.size() <= 1 || isVideo) {
-            layoutNav.setVisibility(View.GONE);
-            return;
-        }
-        layoutNav.setVisibility(View.VISIBLE);
-        btnPrev.setEnabled(currentIndex > 0);
-        btnNext.setEnabled(currentIndex < fileList.size() - 1);
     }
 
     // display media content
@@ -339,13 +361,16 @@ public class MediaView extends AppCompatActivity {
                 String vUrl = d.getString("url", "");
                 if (!vUrl.isEmpty()) {
                     setWeb();
+                    String mime = d.getString("mime", "video/mp4");
                     String h = "<!DOCTYPE html><html><head>"
                         + "<meta name='viewport' content='width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no'>"
                         + "<style>*{margin:0;padding:0;overflow:hidden}body{background:#000;"
                         + "display:flex;align-items:center;justify-content:center;height:100vh}"
                         + "video{width:100%;height:100%;object-fit:contain}</style></head>"
                         + "<body><video id='vPlayer' controls autoplay playsinline>"
-                        + "<source src='" + vUrl + "' type='video/mp4'></video>"
+                        + "<source src='" + vUrl + "' type='" + TextUtils.htmlEncode(mime) + "'>"
+                        + "<source src='" + vUrl + "'>"
+                        + "</video>"
                         + "<script>"
                         + "var v = document.getElementById('vPlayer');"
                         + "if (v) {"
@@ -353,6 +378,29 @@ public class MediaView extends AppCompatActivity {
                         + "  v.addEventListener('webkitfullscreenchange', function() { if (v.videoHeight > v.videoWidth && document.webkitIsFullScreen) document.webkitExitFullscreen(); });"
                         + "}"
                         + "</script></body></html>";
+                    web.loadDataWithBaseURL("http://127.0.0.1/", h, "text/html", "UTF-8", null);
+                    getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                    tStat.setText(name);
+                    isVideo = true;
+                    hideNavBar();
+                    layoutNav.setVisibility(View.GONE);
+                }
+                break;
+
+            case "audio":
+                String aUrl = d.getString("url", "");
+                if (!aUrl.isEmpty()) {
+                    setWeb();
+                    String mime = d.getString("mime", "audio/mpeg");
+                    String h = "<!DOCTYPE html><html><head>"
+                        + "<meta name='viewport' content='width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no'>"
+                        + "<style>*{margin:0;padding:0;overflow:hidden}body{background:#000;"
+                        + "display:flex;align-items:center;justify-content:center;height:100vh}"
+                        + "audio{width:90%;max-width:600px}</style></head>"
+                        + "<body><audio id='aPlayer' controls autoplay playsinline>"
+                        + "<source src='" + aUrl + "' type='" + TextUtils.htmlEncode(mime) + "'>"
+                        + "<source src='" + aUrl + "'>"
+                        + "</audio></body></html>";
                     web.loadDataWithBaseURL("http://127.0.0.1/", h, "text/html", "UTF-8", null);
                     getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                     tStat.setText(name);
