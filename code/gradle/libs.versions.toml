@@ -8,7 +8,7 @@ material = "1.14.0"
 bcprovJdk18on = "1.80"
 argon2kt = "1.6.0"
 documentfile = "1.1.0"
-biometric = "1.4.0-alpha07"
+biometric = "1.4.0-beta01"
 
 [libraries]
 junit = { group = "junit", name = "junit", version.ref = "junit" }

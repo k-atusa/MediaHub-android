@@ -24,14 +24,14 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:gravity="center_vertical"
-            android:padding="4dp">
+            android:padding="2dp">
             
             <CheckBox
                 android:id="@+id/chkSelect"
                 android:layout_width="24dp"
                 android:layout_height="24dp"
-                android:scaleX="0.8"
-                android:scaleY="0.8"
+                android:scaleX="0.95"
+                android:scaleY="0.95"
                 android:minWidth="0dp"
                 android:minHeight="0dp" />
                 

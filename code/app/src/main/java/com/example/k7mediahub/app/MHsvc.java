@@ -476,8 +476,10 @@ public class MHsvc extends Service {
             type = "image";
         } else if ("pdf".equals(ext)) {
             type = "pdf";
-        } else if (Arrays.asList("mp4", "webm", "mov", "mkv", "avi").contains(ext)) {
+        } else if (Arrays.asList("mp4", "webm", "mov", "mkv", "avi", "wmv").contains(ext)) {
             type = "video";
+        } else if (Arrays.asList("mp3", "wav", "ogg", "opus", "flac", "aac", "m4a", "wma").contains(ext)) {
+            type = "audio";
         } else {
             type = "text";
         }
@@ -513,7 +515,7 @@ public class MHsvc extends Service {
                 updateNotif("Loaded media");
             }
 
-        } else if ("video".equals(type) || "pdf".equals(type)) { // video pdf
+        } else if ("video".equals(type) || "audio".equals(type) || "pdf".equals(type)) { // video audio pdf
             updateNotif("Making streaming session");
             MHcore.StreamMeta meta = core.GetStreamMeta(fm, fileName);
             if (meta == null) throw new IllegalArgumentException("Cannot find filemeta");
@@ -522,8 +524,31 @@ public class MHsvc extends Service {
             String mime;
             if ("pdf".equals(type)) {
                 mime = "application/pdf";
+            } else if ("audio".equals(type)) {
+                switch (ext) {
+                    case "wav":
+                        mime = "audio/wav";
+                        break;
+                    case "ogg": case "opus":
+                        mime = "audio/ogg";
+                        break;
+                    case "flac":
+                        mime = "audio/flac";
+                        break;
+                    case "aac":
+                        mime = "audio/aac";
+                        break;
+                    case "m4a":
+                        mime = "audio/mp4";
+                        break;
+                    case "wma":
+                        mime = "audio/x-ms-wma";
+                        break;
+                    case "mp3": default:
+                        mime = "audio/mpeg";
+                        break;
+                }
             } else {
-                mime = "video/mp4";
                 switch (ext) {
                     case "webm":
                         mime = "video/webm";
@@ -537,6 +562,12 @@ public class MHsvc extends Service {
                     case "avi":
                         mime = "video/x-msvideo";
                         break;
+                    case "wmv":
+                        mime = "video/x-ms-wmv";
+                        break;
+                    case "mp4": default:
+                        mime = "video/mp4";
+                        break;
                 }
             }
 
@@ -546,6 +577,7 @@ public class MHsvc extends Service {
             String url = streamer.AddSession(fm.folderPID, meta.fId, meta.fKey, meta.origSz, mime);
             MHcore.sclear(meta.fKey);
             result.putString("url", url);
+            result.putString("mime", mime);
             updateNotif("Started streaming session");
         }
 

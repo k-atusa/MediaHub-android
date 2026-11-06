@@ -11,6 +11,7 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.ByteBuffer;
@@ -43,6 +44,7 @@ public class MHcore {
     private static final String PEPPER = "_PROJECT_WHY_MEDIAHUB_PEPPER_2026_!@#$";
     private static final String CFG_FILE = "config.dat";
     public static final int CHUNK_SZ = 1048576;
+    public static final int FRAG_SZ = 4 * 1048576;
 
     // memory clear and register as dummy
     private static volatile Object DUMMY;
@@ -423,6 +425,7 @@ public class MHcore {
         URL u = new URL(srvUrl + "/api/userdata/" + uHash);
         HttpURLConnection c = (HttpURLConnection) u.openConnection();
         c.setRequestMethod("POST");
+        c.setRequestProperty("X-User-Hash", uHash);
         c.setDoOutput(true);
         c.setRequestProperty("Content-Type", "application/octet-stream");
         OutputStream out = c.getOutputStream();
@@ -497,7 +500,7 @@ public class MHcore {
         if (idx > 0)
             ext = name.substring(idx + 1).toLowerCase();
         byte[] thumb = null;
-        if (Arrays.asList("mp4", "webm", "mov", "mkv").contains(ext)) {
+        if (Arrays.asList("mp4", "webm", "mov", "mkv", "avi", "wmv").contains(ext)) {
             thumb = vidThumb(path);
         } else if (Arrays.asList("jpg", "jpeg", "png", "gif", "webp").contains(ext)) {
             thumb = imgThumb(path);
@@ -537,32 +540,52 @@ public class MHcore {
         if (Opsec.PadLen(encSz) > 0) Opsec.PadFile(tOut, padSz);
         tOut.close();
 
-        // upload data
+        // upload file data in fragments
         URL u = new URL(srvUrl + "/api/media/" + fm.folderPID + "/" + filePID + "/dat");
-        HttpURLConnection c = (HttpURLConnection) u.openConnection();
-        c.setRequestMethod("POST");
-        c.setRequestProperty("X-User-Hash", uHash);
-        c.setRequestProperty("Content-Type", "application/octet-stream");
         long tLen = tFile.length();
-        c.setFixedLengthStreamingMode(tLen);
-        c.setDoOutput(true);
-
-        FileInputStream tIn = new FileInputStream(tFile);
-        OutputStream out = c.getOutputStream();
-        byte[] buf = new byte[65536];
-        int r;
+        long offset = 0;
         long cur = 0;
-        while ((r = tIn.read(buf)) != -1) {
-            out.write(buf, 0, r);
-            cur += r;
-            SVCC1.getChan().SetInt(0, (int) (cur * 100 / tLen));
+        byte[] buf = new byte[65536];
+
+        try (FileInputStream tIn = new FileInputStream(tFile)) {
+            while (offset < tLen) {
+                long fragLen = Math.min(FRAG_SZ, tLen - offset);
+
+                // upload headers
+                HttpURLConnection c = (HttpURLConnection) u.openConnection();
+                c.setRequestMethod("POST");
+                c.setRequestProperty("X-User-Hash", uHash);
+                c.setRequestProperty("X-Upload-Offset", String.valueOf(offset));
+                c.setRequestProperty("Content-Type", "application/octet-stream");
+                c.setFixedLengthStreamingMode(fragLen);
+                c.setDoOutput(true);
+
+                // upload with fragLen size
+                OutputStream out = c.getOutputStream();
+                long fragRead = 0;
+                while (fragRead < fragLen) {
+                    int toRead = (int) Math.min(buf.length, fragLen - fragRead);
+                    int r = tIn.read(buf, 0, toRead);
+                    if (r == -1) break;
+                    out.write(buf, 0, r);
+                    fragRead += r;
+                    cur += r;
+                    SVCC1.getChan().SetInt(0, (int) (cur * 100 / tLen));
+                }
+                out.flush();
+                out.close();
+
+                // prepare next
+                int code = c.getResponseCode();
+                c.disconnect();
+                if (code != 200 && code != 206) {
+                    throw new RuntimeException("Upload failed: code " + code);
+                }
+                offset += fragLen;
+            }
+        } finally {
+            tFile.delete();
         }
-        out.flush();
-        out.close();
-        tIn.close();
-        tFile.delete();
-        if (c.getResponseCode() != 200) throw new RuntimeException("Upload failed: code " + c.getResponseCode());
-        c.disconnect();
 
         // encode info to folder map
         byte[] sizeBuf = opsec.EncodeInt(origSz, 8);
@@ -601,6 +624,119 @@ public class MHcore {
         return true;
     }
 
+    // fragmented downloading InputStream
+    private class FragInputStream extends InputStream {
+        private final URL url;
+        private long totalSize;
+        private long currentPos = 0;
+        private InputStream currentStream = null;
+        private HttpURLConnection currentConn = null;
+        private long currentRemaining = 0;
+
+        public FragInputStream(URL url, long totalSize) {
+            this.url = url;
+            this.totalSize = totalSize;
+        }
+
+        // stream management
+        private boolean ensureStream() throws IOException {
+            // check validity
+            if (currentRemaining > 0 && currentStream != null) {
+                return true;
+            }
+            if (currentStream != null) {
+                try { currentStream.close(); } catch (Exception ignored) {}
+                if (currentConn != null) { currentConn.disconnect(); }
+                currentStream = null;
+                currentConn = null;
+            }
+            if (totalSize >= 0 && currentPos >= totalSize) {
+                return false;
+            }
+
+            // positions
+            long reqStart = currentPos;
+            long reqLen = (totalSize >= 0) ? Math.min(FRAG_SZ, totalSize - currentPos) : FRAG_SZ;
+            if (reqLen <= 0) return false;
+            long reqEnd = reqStart + reqLen - 1;
+
+            try { // try to get connection
+                HttpURLConnection c = (HttpURLConnection) url.openConnection();
+                c.setRequestMethod("GET");
+                if (uHash != null) {
+                    c.setRequestProperty("X-User-Hash", uHash);
+                }
+                c.setRequestProperty("Range", "bytes=" + reqStart + "-" + reqEnd);
+                int code = c.getResponseCode();
+                if (code == 200 || code == 206) {
+                    if (totalSize < 0) { // parse total size from response headers
+                        String cr = c.getHeaderField("Content-Range");
+                        if (cr != null && cr.contains("/")) {
+                            try { // extract total size from Content-Range
+                                totalSize = Long.parseLong(cr.substring(cr.lastIndexOf('/') + 1).trim());
+                            } catch (Exception ignored) {}
+                        }
+                        if (totalSize < 0) { // calculate from Content-Length (fallback)
+                            long cl = c.getContentLengthLong();
+                            if (cl > 0) totalSize = reqStart + cl;
+                        }
+                    }
+                    currentConn = c;
+                    currentStream = c.getInputStream();
+                    currentRemaining = (code == 200 && c.getContentLengthLong() > 0) ? c.getContentLengthLong() : reqLen;
+                    return true;
+                } else {
+                    c.disconnect();
+                    return false;
+                }
+            } catch (Exception e) {
+                if (e instanceof IOException) throw (IOException) e;
+                throw new IOException(e);
+            }
+        }
+
+        @Override
+        public int read() throws IOException {
+            byte[] b = new byte[1];
+            int r = read(b, 0, 1);
+            if (r <= 0) return -1;
+            return Byte.toUnsignedInt(b[0]);
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            if (len <= 0) return 0;
+            int totalRead = 0;
+            while (totalRead < len) { // loop while total read size
+                if (!ensureStream()) {
+                    break;
+                }
+                int toRead = (int) Math.min(len - totalRead, currentRemaining); // read as current available
+                int r = currentStream.read(b, off + totalRead, toRead);
+                if (r > 0) {
+                    currentPos += r;
+                    currentRemaining -= r;
+                    totalRead += r;
+                } else if (r == -1) {
+                    currentRemaining = 0;
+                } else {
+                    break;
+                }
+            }
+            return totalRead > 0 ? totalRead : -1;
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (currentStream != null) {
+                try { currentStream.close(); } catch (Exception ignored) {}
+                if (currentConn != null) { currentConn.disconnect(); }
+                currentStream = null;
+                currentConn = null;
+            }
+        }
+    }
+
     // download file
     public String DnFile(Context ctx, FileMap fm, String fileName) throws Exception {
         if (!fm.fileMap.containsKey(fileName)) throw new IllegalArgumentException("File not found in metadata");
@@ -616,38 +752,30 @@ public class MHcore {
         Bencrypt.SymMaster smx = new Bencrypt.SymMaster("gcmx1", fkSlice);
         long ciphSz = smx.AfterSize(origSz);
 
-        // download data
+        // download full file data in fragments
         URL u = new URL(srvUrl + "/api/media/" + fm.folderPID + "/" + filePID + "/dat");
-        HttpURLConnection c = (HttpURLConnection) u.openConnection();
-        c.setRequestMethod("GET");
-        int resCode = c.getResponseCode();
-
-        if (resCode == 200 || resCode == 206) {
-            IO1.VFile destFile = IO1.CreateDownloadsFile(ctx, fileName);
-            if (destFile == null) throw new RuntimeException("Failed to create download file");
-            OutputStream fos = destFile.OpenWriter(ctx, false);
-            InputStream in = c.getInputStream();
-
-            // download all
-            new Thread(() -> {
-                while (smx.Processed() < ciphSz) {
-                    SVCC1.getChan().SetInt(0, (int) (smx.Processed() * 100 / ciphSz));
-                    try { Thread.sleep(200); } catch (Exception ignored) {}
-                }
-                SVCC1.getChan().SetInt(0, 100);
-            }).start();
-
-            smx.DeFile(in, ciphSz, fos);
-            in.close();
-            fos.close();
-            c.disconnect();
+        IO1.VFile destFile = IO1.CreateDownloadsFile(ctx, fileName);
+        if (destFile == null) {
             sclear(fkSlice);
-            return destFile.GetUri().toString();
-        } else {
-            c.disconnect();
-            sclear(fkSlice);
-            throw new RuntimeException("Download failed: " + resCode);
+            throw new RuntimeException("Failed to create download file");
         }
+        OutputStream fos = destFile.OpenWriter(ctx, false);
+        InputStream in = new FragInputStream(u, ciphSz);
+
+        // download all
+        new Thread(() -> {
+            while (smx.Processed() < ciphSz) {
+                SVCC1.getChan().SetInt(0, (int) (smx.Processed() * 100 / ciphSz));
+                try { Thread.sleep(200); } catch (Exception ignored) {}
+            }
+            SVCC1.getChan().SetInt(0, 100);
+        }).start();
+
+        smx.DeFile(in, ciphSz, fos);
+        in.close();
+        fos.close();
+        sclear(fkSlice);
+        return destFile.GetUri().toString();
     }
 
     // progress listener
@@ -682,19 +810,37 @@ public class MHcore {
 
         // download data
         if (downloaded == null) {
-            URL u = new URL(srvUrl + "/api/media/" + fm.folderPID + "/" + filePID + "/" + typ);
-            HttpURLConnection c = (HttpURLConnection) u.openConnection();
-            c.setRequestMethod("GET");
-            if (isThumbnail) {
+            if (isThumbnail) { // single request thumbnail data
+                URL u = new URL(srvUrl + "/api/media/" + fm.folderPID + "/" + filePID + "/thumb");
+                HttpURLConnection c = (HttpURLConnection) u.openConnection();
+                c.setRequestMethod("GET");
                 c.setConnectTimeout(3000);
                 c.setReadTimeout(5000);
-            }
-            int resCode = c.getResponseCode();
+                int resCode = c.getResponseCode();
+                if (resCode == 200 || resCode == 206) {
+                    InputStream in = c.getInputStream();
+                    ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                    byte[] buf = new byte[65536];
+                    int r;
+                    while ((r = in.read(buf)) != -1) bos.write(buf, 0, r);
+                    in.close();
+                    c.disconnect();
+                    downloaded = bos.toByteArray();
+                    if (cache != null && downloaded.length > 0) cache.PutFileCache("thumbs", cacheKeyThumb, downloaded);
+                } else {
+                    c.disconnect();
+                    throw new RuntimeException("Download failed: " + resCode);
+                }
+            } else {
+                // download in fragments file data
+                URL u = new URL(srvUrl + "/api/media/" + fm.folderPID + "/" + filePID + "/dat");
+                byte[] fkSliceTemp = Arrays.copyOfRange(fileKey, 0, 32);
+                Bencrypt.SymMaster smxTemp = new Bencrypt.SymMaster("gcmx1", fkSliceTemp);
+                long totalCiphSz = smxTemp.AfterSize(origSz);
+                sclear(fkSliceTemp);
 
-            // download all
-            if (resCode == 200 || resCode == 206) {
-                long total = c.getContentLengthLong();
-                InputStream in = c.getInputStream();
+                // download in memory
+                InputStream in = new FragInputStream(u, totalCiphSz);
                 ByteArrayOutputStream bos = new ByteArrayOutputStream();
                 byte[] buf = new byte[65536];
                 int r;
@@ -703,22 +849,20 @@ public class MHcore {
                 while ((r = in.read(buf)) != -1) {
                     bos.write(buf, 0, r);
                     cur += r;
-                    if (listener != null && total > 0) {
-                        int pct = (int) (cur * 100 / total);
+                    if (listener != null && totalCiphSz > 0) {
+                        int pct = (int) (cur * 100 / totalCiphSz);
                         if (pct != lastPct) {
                             lastPct = pct;
                             listener.onProgress(pct);
                         }
                     }
                 }
-
                 in.close();
-                c.disconnect();
                 downloaded = bos.toByteArray();
-                if (isThumbnail && cache != null && downloaded.length > 0) cache.PutFileCache("thumbs", cacheKeyThumb, downloaded);
-            } else {
-                c.disconnect();
-                throw new RuntimeException("Download failed: " + resCode);
+                if (downloaded.length == 0) {
+                    sclear(fileKey);
+                    throw new RuntimeException("Download failed: empty data");
+                }
             }
         }
 
